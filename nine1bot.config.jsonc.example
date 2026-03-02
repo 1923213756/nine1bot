@@ -1,0 +1,57 @@
+{
+  "$schema": "https://nine1bot.com/config.schema.json",
+  "server": {
+    "port": 4096,
+    "hostname": "127.0.0.1",
+    "openBrowser": true
+  },
+  "auth": {
+    "enabled": false,
+    "password": ""
+  },
+  "tunnel": {
+    "enabled": false,
+    "provider": "ngrok",
+    "ngrok": {
+      "authToken": ""
+    },
+    "natapp": {
+      "authToken": ""
+    }
+  },
+  "isolation": {
+    "disableGlobalConfig": false,
+    "disableProjectConfig": false
+  },
+  "provider": {},
+  "mcp": {},
+  "browser": {
+    "enabled": false,
+    "cdpPort": 9222,
+    "autoLaunch": true,
+    "headless": false
+  },
+  "customProviders": {
+    "my-openai": {
+      "name": "My OpenAI Compatible",
+      "protocol": "openai",
+      "baseURL": "https://example.com/v1",
+      "models": [
+        {
+          "id": "gpt-4o-mini"
+        }
+      ]
+    },
+    "my-anthropic": {
+      "name": "My Anthropic Compatible",
+      "protocol": "anthropic",
+      "baseURL": "https://example.com/anthropic",
+      "models": [
+        {
+          "id": "claude-3-5-sonnet-latest"
+        }
+      ]
+    }
+  },
+  "model": "my-openai/gpt-4o-mini"
+}
