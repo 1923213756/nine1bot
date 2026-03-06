@@ -431,6 +431,7 @@ export const FileRoutes = lazy(() =>
               "application/json": {
                 schema: resolver(
                   z.object({
+                    kind: z.enum(["filesystem", "roots"]),
                     path: z.string(),
                     parent: z.string().nullable(),
                     items: z.array(
@@ -462,8 +463,51 @@ export const FileRoutes = lazy(() =>
         const path = await import("path")
         const fs = await import("fs/promises")
         const os = await import("os")
-
+        const ROOTS_VIEW = "@roots"
+        const isWindows = process.platform === "win32"
         let dirPath = c.req.valid("query").path
+
+        if (dirPath === ROOTS_VIEW) {
+          if (!isWindows) {
+            return c.json({ error: "Roots view is only available on Windows" }, 404)
+          }
+
+          const items: Array<{
+            name: string
+            path: string
+            type: "file" | "directory"
+            size?: number
+            modified?: number
+          }> = []
+
+          for (let code = 65; code <= 90; code++) {
+            const letter = String.fromCharCode(code)
+            const drivePath = `${letter}:\\`
+
+            try {
+              const stat = await fs.stat(drivePath)
+              if (!stat.isDirectory()) continue
+
+              items.push({
+                name: `${letter}:`,
+                path: drivePath,
+                type: "directory",
+                modified: stat.mtimeMs,
+              })
+            } catch {
+              // Skip unavailable drives.
+            }
+          }
+
+          items.sort((a, b) => a.name.localeCompare(b.name))
+
+          return c.json({
+            kind: "roots",
+            path: ROOTS_VIEW,
+            parent: null,
+            items,
+          })
+        }
 
         // Handle home directory shortcut
         if (dirPath === "~" || dirPath.startsWith("~/")) {
@@ -517,9 +561,20 @@ export const FileRoutes = lazy(() =>
             return a.name.localeCompare(b.name)
           })
 
-          const parent = dirPath === "/" ? null : path.dirname(dirPath)
+          const parsed = path.parse(dirPath)
+          const isWindowsRoot =
+            isWindows &&
+            parsed.root.length > 0 &&
+            parsed.root.replace(/[\\/]+$/, "").toLowerCase() === dirPath.replace(/[\\/]+$/, "").toLowerCase()
+
+          const parent = isWindowsRoot
+            ? ROOTS_VIEW
+            : dirPath === "/"
+              ? null
+              : path.dirname(dirPath)
 
           return c.json({
+            kind: "filesystem",
             path: dirPath,
             parent,
             items,

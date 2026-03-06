@@ -499,6 +499,7 @@ export const api = {
 
   // 浏览目录（用于目录选择器）
   async browseDirectory(path: string = '~'): Promise<{
+    kind: 'filesystem' | 'roots'
     path: string
     parent: string | null
     items: Array<{
