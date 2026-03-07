@@ -15,6 +15,7 @@ interface FileAttachment {
 
 const props = defineProps<{
   tool: MessagePart
+  hideAttachments?: boolean
 }>()
 
 const { openPreviewByPath } = useFilePreview()
@@ -236,7 +237,7 @@ function formatSize(bytes: number): string {
     </div>
 
     <!-- Preview button for preview_file tool -->
-    <div v-if="isPreviewTool && previewMetadata?.path && status === 'completed'" class="tool-preview">
+    <div v-if="!hideAttachments && isPreviewTool && previewMetadata?.path && status === 'completed'" class="tool-preview">
       <div class="preview-item">
         <Eye :size="16" class="preview-icon" />
         <span class="preview-name">{{ previewMetadata.filename || '文件预览' }}</span>
@@ -260,7 +261,7 @@ function formatSize(bytes: number): string {
     </div>
 
     <!-- Attachments (always visible when present) -->
-    <div v-if="attachments.length > 0" class="tool-attachments">
+    <div v-if="!hideAttachments && attachments.length > 0" class="tool-attachments">
       <div
         v-for="attachment in attachments"
         :key="attachment.id"

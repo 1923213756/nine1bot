@@ -2,15 +2,16 @@
 import { computed, ref } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { Bot, User, Brain, ChevronDown, Pencil, Trash2, X, Check } from 'lucide-vue-next'
+import { Bot, User, Pencil, Trash2, X, Check } from 'lucide-vue-next'
 import type { Message, MessagePart } from '../api/client'
-import ToolCall from './ToolCall.vue'
+import AgentSteps from './AgentSteps.vue'
 import { useUserProfile } from '../composables/useUserProfile'
 
 const { profile, botAvatar } = useUserProfile()
 
 const props = defineProps<{
   message: Message
+  isStreaming?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -60,22 +61,60 @@ marked.setOptions({
   gfm: true
 })
 
-// Get all parts to display
-const displayParts = computed(() => {
-  const result: Array<{ type: string; part: MessagePart; index: number }> = []
-  props.message.parts.forEach((part, index) => {
-    // 过滤 synthetic 文本（系统生成的上传描述等），不在用户气泡中显示
-    if (part.type === 'text' && (part as any).synthetic) return
-    if (part.type === 'text' && part.text) {
-      result.push({ type: 'text', part, index })
-    } else if (part.type === 'tool') {
-      result.push({ type: 'tool', part, index })
-    } else if (part.type === 'reasoning') {
-      result.push({ type: 'reasoning', part, index })
+// User message parts (simple: only text and file)
+const userParts = computed(() => {
+  return props.message.parts
+    .filter(p => {
+      if (p.type === 'text' && (p as any).synthetic) return false
+      return p.type === 'text' || p.type === 'file'
+    })
+    .map((part, index) => ({ part, index }))
+})
+
+// Agent message: group step parts into one foldable unit
+interface Step { parts: MessagePart[]; isComplete: boolean }
+type GroupedItem =
+  | { type: 'steps'; steps: Step[] }
+  | { type: 'text'; part: MessagePart }
+  | { type: 'file'; part: MessagePart }
+
+const groupedContent = computed<GroupedItem[]>(() => {
+  const result: GroupedItem[] = []
+  let stepsGroup: Extract<GroupedItem, { type: 'steps' }> | null = null
+  let currentStep: Step | null = null
+
+  for (const part of props.message.parts) {
+    if (part.type === 'step-start') {
+      if (!stepsGroup) {
+        stepsGroup = { type: 'steps', steps: [] }
+        result.push(stepsGroup)
+      }
+      currentStep = { parts: [], isComplete: false }
+      stepsGroup.steps.push(currentStep)
+    } else if (part.type === 'step-finish') {
+      if (currentStep) currentStep.isComplete = true
+      currentStep = null
+    } else if (part.type === 'tool' || part.type === 'reasoning') {
+      if (currentStep) {
+        currentStep.parts.push(part)
+      } else {
+        // tool/reasoning outside explicit steps — create implicit step group
+        if (!stepsGroup) {
+          stepsGroup = { type: 'steps', steps: [] }
+          result.push(stepsGroup)
+        }
+        if (stepsGroup.steps.length === 0) {
+          const implicit: Step = { parts: [], isComplete: true }
+          stepsGroup.steps.push(implicit)
+        }
+        stepsGroup.steps[stepsGroup.steps.length - 1].parts.push(part)
+      }
+    } else if (part.type === 'text' && !(part as any).synthetic && part.text) {
+      result.push({ type: 'text', part })
     } else if (part.type === 'file') {
-      result.push({ type: 'file', part, index })
+      result.push({ type: 'file', part })
     }
-  })
+  }
   return result
 })
 
@@ -104,9 +143,6 @@ function closeImagePreview() {
   previewImageUrl.value = null
 }
 
-// Thinking block state
-const thinkingExpanded = ref(false)
-
 // Format text with marked and sanitize with DOMPurify
 function formatText(text: string): string {
   try {
@@ -132,38 +168,61 @@ function formatText(text: string): string {
       </template>
     </div>
 
-    <div class="message-wrapper" :class="{ 'user-wrapper': message.info.role === 'user' }">
-      <div class="message-bubble" :class="{ 'user-bubble': message.info.role === 'user', 'agent-bubble glass': message.info.role !== 'user' }">
-
-      <div class="message-sender-name" v-if="message.info.role === 'user' && profile.name">
-        {{ profile.name }}
-      </div>
-      <div class="message-sender-name" v-else-if="message.info.role !== 'user'">
-        {{ message.info.model?.modelID || 'Nine1Bot' }}
-      </div>
-
-      <div class="message-content">
-        <template v-for="item in displayParts" :key="item.part.id || item.index">
-          <!-- Thinking/Reasoning -->
-          <div v-if="item.type === 'reasoning'" class="thinking-block">
-            <div class="thinking-header" @click="thinkingExpanded = !thinkingExpanded">
-              <Brain :size="14" class="thinking-icon" />
-              <span class="thinking-label">Reasoning Process</span>
-              <ChevronDown
-                :size="14"
-                class="thinking-chevron"
-                :class="{ expanded: thinkingExpanded }"
+    <!-- User message -->
+    <div v-if="message.info.role === 'user'" class="message-wrapper user-wrapper">
+      <div class="message-bubble user-bubble">
+        <div class="message-sender-name" v-if="profile.name">{{ profile.name }}</div>
+        <div class="message-content">
+          <template v-for="item in userParts" :key="item.part.id || item.index">
+            <!-- File Attachment -->
+            <div v-if="item.part.type === 'file'" class="file-attachment">
+              <img
+                v-if="isImageFile(item.part)"
+                :src="resolveFileUrl((item.part as any).url)"
+                :alt="(item.part as any).filename || 'Uploaded image'"
+                class="uploaded-image"
+                @click="openImagePreview(resolveFileUrl((item.part as any).url))"
               />
+              <a v-else :href="resolveFileUrl((item.part as any).url)" target="_blank" class="file-badge">
+                <span class="file-icon">📄</span>
+                <span class="file-name">{{ (item.part as any).filename || 'File' }}</span>
+              </a>
             </div>
-            <div v-if="thinkingExpanded || !item.part.text" class="thinking-body">
-              <div v-if="item.part.text" class="thinking-text">{{ item.part.text }}</div>
-              <div v-else class="loading-wave">
-                <span>.</span><span>.</span><span>.</span>
+            <!-- Text -->
+            <div v-else-if="item.part.type === 'text'" class="text-part" :class="{ editing: editingPartId === item.part.id }">
+              <div v-if="editingPartId === item.part.id" class="edit-mode">
+                <textarea v-model="editText" class="edit-textarea" rows="4" @keyup.escape="cancelEdit"></textarea>
+                <div class="edit-actions">
+                  <button class="btn btn-ghost btn-sm" @click="cancelEdit"><X :size="14" /> 取消</button>
+                  <button class="btn btn-primary btn-sm" @click="confirmEdit(item.part.id)" :disabled="!editText.trim()"><Check :size="14" /> 保存</button>
+                </div>
               </div>
+              <template v-else>
+                <div class="markdown-content" v-html="formatText(item.part.text || '')"></div>
+              </template>
             </div>
-          </div>
+          </template>
+        </div>
+      </div>
+      <!-- 用户消息操作按钮 -->
+      <div class="message-actions" v-if="!editingPartId">
+        <button class="action-btn" @click="startEdit(message.parts.find(p => p.type === 'text')!)" title="编辑"><Pencil :size="14" /></button>
+        <button class="action-btn danger" @click="startDelete(message.parts.find(p => p.type === 'text')!)" title="删除"><Trash2 :size="14" /></button>
+      </div>
+    </div>
 
-          <!-- File Attachment (Image) -->
+    <!-- Agent message (no bubble) -->
+    <div v-else class="message-wrapper agent-wrapper">
+      <div class="message-sender-name">{{ message.info.model?.modelID || 'Nine1Bot' }}</div>
+      <div class="agent-content">
+        <template v-for="(item, idx) in groupedContent" :key="idx">
+          <!-- All agentic steps collapsed into one unit -->
+          <AgentSteps
+            v-if="item.type === 'steps'"
+            :steps="item.steps"
+            :isStreaming="isStreaming ?? false"
+          />
+          <!-- File Attachment -->
           <div v-else-if="item.type === 'file'" class="file-attachment">
             <img
               v-if="isImageFile(item.part)"
@@ -177,53 +236,9 @@ function formatText(text: string): string {
               <span class="file-name">{{ (item.part as any).filename || 'File' }}</span>
             </a>
           </div>
-
-          <!-- Tool Call -->
-          <ToolCall
-            v-else-if="item.type === 'tool'"
-            :tool="item.part"
-          />
-
-          <!-- Text Content with Markdown -->
-          <div
-            v-else-if="item.type === 'text'"
-            class="text-part"
-            :class="{ 'editing': editingPartId === item.part.id }"
-          >
-            <!-- 编辑模式 -->
-            <div v-if="editingPartId === item.part.id" class="edit-mode">
-              <textarea
-                v-model="editText"
-                class="edit-textarea"
-                rows="4"
-                @keyup.escape="cancelEdit"
-              ></textarea>
-              <div class="edit-actions">
-                <button class="btn btn-ghost btn-sm" @click="cancelEdit">
-                  <X :size="14" /> 取消
-                </button>
-                <button class="btn btn-primary btn-sm" @click="confirmEdit(item.part.id)" :disabled="!editText.trim()">
-                  <Check :size="14" /> 保存
-                </button>
-              </div>
-            </div>
-            <!-- 正常显示模式 -->
-            <template v-else>
-              <div class="markdown-content" v-html="formatText(item.part.text || '')"></div>
-            </template>
-          </div>
+          <!-- Direct text output (always visible) -->
+          <div v-else-if="item.type === 'text'" class="markdown-content" v-html="formatText(item.part.text || '')"></div>
         </template>
-      </div>
-      </div>
-
-      <!-- 用户消息的操作按钮（在气泡下方） -->
-      <div class="message-actions" v-if="message.info.role === 'user' && !editingPartId">
-        <button class="action-btn" @click="startEdit(message.parts.find(p => p.type === 'text')!)" title="编辑">
-          <Pencil :size="14" />
-        </button>
-        <button class="action-btn danger" @click="startDelete(message.parts.find(p => p.type === 'text')!)" title="删除">
-          <Trash2 :size="14" />
-        </button>
       </div>
     </div>
   </div>
@@ -336,9 +351,13 @@ function formatText(text: string): string {
   color: var(--text-primary);
 }
 
-.agent-bubble {
-  background: var(--bg-primary);
-  border: 0.5px solid var(--border-default);
+.agent-wrapper {
+  max-width: 720px;
+  padding-top: 2px;
+}
+
+.agent-content {
+  width: 100%;
 }
 
 .message-sender-name {
@@ -350,74 +369,6 @@ function formatText(text: string): string {
   letter-spacing: 0.5px;
 }
 
-/* Thinking Block */
-.thinking-block {
-  margin: 8px 0 16px;
-  border: 0.5px solid var(--border-default);
-  background: var(--bg-secondary);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-
-.thinking-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-secondary);
-  cursor: pointer;
-  user-select: none;
-  transition: background var(--transition-fast);
-}
-
-.thinking-header:hover {
-  background: var(--bg-tertiary);
-}
-
-.thinking-label {
-  flex: 1;
-}
-
-.thinking-chevron {
-  transition: transform 0.15s var(--ease-smooth);
-}
-
-.thinking-chevron.expanded {
-  transform: rotate(180deg);
-}
-
-.thinking-body {
-  padding: 12px;
-  border-top: 0.5px solid var(--border-subtle);
-  background: var(--bg-secondary);
-  font-size: 13px;
-  color: var(--text-muted);
-  font-style: italic;
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.thinking-text {
-  white-space: pre-wrap;
-}
-
-/* Loading Dots */
-.loading-wave span {
-  animation: wave 1.2s infinite ease-in-out;
-  display: inline-block;
-  margin: 0 1px;
-  font-size: 20px;
-  line-height: 10px;
-}
-.loading-wave span:nth-child(2) { animation-delay: 0.1s; }
-.loading-wave span:nth-child(3) { animation-delay: 0.2s; }
-
-@keyframes wave {
-  0%, 100% { transform: translateY(0); opacity: 0.5; }
-  50% { transform: translateY(-4px); opacity: 1; }
-}
 
 /* Prose / Markdown Styling */
 .markdown-content {

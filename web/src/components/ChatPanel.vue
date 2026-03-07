@@ -3,6 +3,7 @@ import { ref, watch, nextTick, computed } from 'vue'
 import { FolderOpen } from 'lucide-vue-next'
 import type { Message, QuestionRequest, PermissionRequest } from '../api/client'
 import MessageItem from './MessageItem.vue'
+import AgentMessageGroup from './AgentMessageGroup.vue'
 import AgentQuestion from './AgentQuestion.vue'
 import PermissionRequestVue from './PermissionRequest.vue'
 import DirectoryBrowser from './DirectoryBrowser.vue'
@@ -37,6 +38,37 @@ const showDirectoryBrowser = ref(false)
 const validMessages = computed(() =>
   props.messages.filter(m => m?.info?.id)
 )
+
+// Group consecutive assistant messages into one visual unit
+type DisplayGroup =
+  | { type: 'user'; message: Message; key: string }
+  | { type: 'agent'; messages: Message[]; key: string; isLast: boolean }
+
+const displayGroups = computed<DisplayGroup[]>(() => {
+  const groups: DisplayGroup[] = []
+  let agentGroup: Extract<DisplayGroup, { type: 'agent' }> | null = null
+
+  for (const message of validMessages.value) {
+    if (message.info.role === 'user') {
+      agentGroup = null
+      groups.push({ type: 'user', message, key: message.info.id })
+    } else {
+      if (!agentGroup) {
+        agentGroup = { type: 'agent', messages: [], key: message.info.id, isLast: false }
+        groups.push(agentGroup)
+      }
+      agentGroup.messages.push(message)
+    }
+  }
+
+  // Mark last group
+  if (groups.length > 0) {
+    const last = groups[groups.length - 1]
+    if (last.type === 'agent') last.isLast = true
+  }
+
+  return groups
+})
 
 // Time-based greeting
 const greeting = computed(() => {
@@ -138,13 +170,22 @@ function scrollToBottom() {
 
     <!-- Messages -->
     <div class="messages-container" v-else>
-      <MessageItem
-        v-for="message in validMessages"
-        :key="message.info.id"
-        :message="message"
-        @delete-part="(msgId, partId) => emit('deletePart', msgId, partId)"
-        @update-part="(msgId, partId, updates) => emit('updatePart', msgId, partId, updates)"
-      />
+      <template v-for="group in displayGroups" :key="group.key">
+        <!-- User message -->
+        <MessageItem
+          v-if="group.type === 'user'"
+          :message="group.message"
+          @delete-part="(msgId, partId) => emit('deletePart', msgId, partId)"
+          @update-part="(msgId, partId, updates) => emit('updatePart', msgId, partId, updates)"
+        />
+        <!-- Consecutive agent messages as one group -->
+        <div v-else class="agent-message-row">
+          <AgentMessageGroup
+            :messages="group.messages"
+            :isStreaming="isStreaming && group.isLast"
+          />
+        </div>
+      </template>
 
       <!-- Pending Permission Requests -->
       <div v-if="pendingPermissions?.length" class="pending-requests">
@@ -285,6 +326,19 @@ function scrollToBottom() {
 
 .bottom-spacer {
   height: 48px;
+}
+
+.agent-message-row {
+  padding: 8px var(--space-lg);
+  max-width: var(--input-max-width);
+  width: 100%;
+  opacity: 0;
+  animation: fade-up 0.3s var(--ease-smooth, ease) forwards;
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .pending-requests {

@@ -5,8 +5,6 @@ import { homedir } from "os"
 import type { Config } from "./config"
 import { Log } from "../util/log"
 
-const log = Log.create({ service: "claude-mcp" })
-
 /**
  * Get the Claude Desktop config file path based on platform
  */
@@ -37,6 +35,7 @@ interface ClaudeConfig {
  * Load Claude Code MCP configuration and convert to OpenCode format
  */
 export async function loadClaudeCodeMcp(): Promise<Record<string, Config.Mcp>> {
+  const log = Log.create({ service: "claude-mcp" })
   const configPath = getClaudeConfigPath()
 
   if (!existsSync(configPath)) {
