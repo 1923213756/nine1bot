@@ -36,9 +36,6 @@
   --transition-normal: 150ms var(--ease-smooth);
   --transition-slow: 300ms var(--ease-smooth);
 
-  --transition-fast: 75ms var(--ease-smooth);
-  --transition-normal: 150ms var(--ease-smooth);
-  --transition-slow: 300ms var(--ease-smooth);
 
   /* Layout */
   --sidebar-width: 260px;

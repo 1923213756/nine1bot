@@ -283,16 +283,12 @@ function formatText(text: string): string {
   display: flex;
   gap: 12px;
   padding: 12px var(--space-lg);
-  gap: 12px;
-  padding: 12px var(--space-lg);
   width: 100%;
   opacity: 0;
-  animation: fade-up 0.3s var(--ease-smooth) forwards;
   animation: fade-up 0.3s var(--ease-smooth) forwards;
 }
 
 @keyframes fade-up {
-  from { opacity: 0; transform: translateY(8px); }
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
@@ -302,9 +298,6 @@ function formatText(text: string): string {
 }
 
 .avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-sm);
   width: 32px;
   height: 32px;
   border-radius: var(--radius-sm);
@@ -321,7 +314,6 @@ function formatText(text: string): string {
 
 .agent-row .avatar {
   background: var(--accent);
-  background: var(--accent);
   color: white;
 }
 
@@ -337,7 +329,6 @@ function formatText(text: string): string {
   display: flex;
   flex-direction: column;
   max-width: 720px;
-  max-width: 720px;
 }
 
 .user-wrapper {
@@ -348,7 +339,6 @@ function formatText(text: string): string {
   width: fit-content;
   max-width: 100%;
   padding: 10px 14px;
-  border-radius: var(--radius-lg);
   border-radius: var(--radius-lg);
   position: relative;
   line-height: 1.5;
@@ -375,9 +365,6 @@ function formatText(text: string): string {
   font-weight: 600;
   color: var(--text-muted);
   margin-bottom: 6px;
-  font-weight: 600;
-  color: var(--text-muted);
-  margin-bottom: 6px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -388,7 +375,6 @@ function formatText(text: string): string {
   font-size: 15px;
   line-height: 1.7;
   color: var(--text-primary);
-  font-weight: var(--font-weight-normal);
   font-weight: var(--font-weight-normal);
 }
 
@@ -413,7 +399,6 @@ function formatText(text: string): string {
   background: var(--bg-tertiary);
   padding: 2px 5px;
   border-radius: var(--radius-sm);
-  border-radius: var(--radius-sm);
   font-family: var(--font-mono);
   font-size: 0.9em;
   color: var(--accent);
@@ -421,17 +406,13 @@ function formatText(text: string): string {
 
 .markdown-content :deep(pre) {
   background: var(--bg-secondary);
-  background: var(--bg-secondary);
   padding: 16px;
   border-radius: var(--radius-md);
   margin: 1em 0;
   overflow-x: auto;
   border: 0.5px solid var(--border-default);
-  border: 0.5px solid var(--border-default);
 }
 
-:root[data-theme='dark'] .markdown-content :deep(pre) {
-  background: #1a1a1e;
 :root[data-theme='dark'] .markdown-content :deep(pre) {
   background: #1a1a1e;
 }
@@ -444,7 +425,6 @@ function formatText(text: string): string {
   border: none;
 }
 
-.markdown-content :deep(ul),
 .markdown-content :deep(ul),
 .markdown-content :deep(ol) {
   margin-bottom: 1em;
@@ -459,7 +439,6 @@ function formatText(text: string): string {
   color: var(--accent);
   text-decoration: underline;
   text-decoration-color: rgba(204, 77, 40, 0.3);
-  text-decoration-color: rgba(204, 77, 40, 0.3);
   text-underline-offset: 2px;
 }
 .markdown-content :deep(a:hover) {
@@ -467,7 +446,6 @@ function formatText(text: string): string {
 }
 
 .markdown-content :deep(blockquote) {
-  border-left: 2px solid var(--accent);
   border-left: 2px solid var(--accent);
   margin: 1em 0;
   padding-left: 1em;
@@ -517,8 +495,6 @@ function formatText(text: string): string {
 .action-btn.danger:hover {
   background: var(--error-subtle);
   color: var(--error);
-  background: var(--error-subtle);
-  color: var(--error);
 }
 
 /* Edit Mode */
@@ -532,8 +508,6 @@ function formatText(text: string): string {
   width: 100%;
   min-width: 300px;
   padding: var(--space-sm);
-  background: var(--bg-primary);
-  border: 0.5px solid var(--border-default);
   background: var(--bg-primary);
   border: 0.5px solid var(--border-default);
   border-radius: var(--radius-sm);
@@ -565,7 +539,6 @@ function formatText(text: string): string {
 
 .btn-danger {
   background: var(--error);
-  background: var(--error);
   color: white;
   border: none;
 }
@@ -586,11 +559,9 @@ function formatText(text: string): string {
   cursor: pointer;
   transition: transform var(--transition-fast);
   border: 0.5px solid var(--border-subtle);
-  border: 0.5px solid var(--border-subtle);
 }
 
 .uploaded-image:hover {
-  transform: scale(1.01);
   transform: scale(1.01);
 }
 
@@ -599,8 +570,6 @@ function formatText(text: string): string {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  background: var(--bg-secondary);
-  border: 0.5px solid var(--border-default);
   background: var(--bg-secondary);
   border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
@@ -626,7 +595,6 @@ function formatText(text: string): string {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
 </style>
 
 <!-- Non-scoped styles for Teleported dialog -->
@@ -645,8 +613,6 @@ function formatText(text: string): string {
 .dialog {
   background: var(--bg-elevated);
   border: 0.5px solid var(--border-default);
-  background: var(--bg-elevated);
-  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
   width: 320px;
   max-width: 90vw;
@@ -658,7 +624,6 @@ function formatText(text: string): string {
   align-items: center;
   justify-content: space-between;
   padding: var(--space-md);
-  border-bottom: 0.5px solid var(--border-subtle);
   border-bottom: 0.5px solid var(--border-subtle);
   font-weight: 600;
 }
@@ -678,7 +643,6 @@ function formatText(text: string): string {
 }
 
 .dialog-header .action-btn:hover {
-  background: var(--bg-tertiary);
   background: var(--bg-tertiary);
   color: var(--text-primary);
 }
@@ -703,7 +667,6 @@ function formatText(text: string): string {
   gap: var(--space-sm);
   padding: var(--space-md);
   border-top: 0.5px solid var(--border-subtle);
-  border-top: 0.5px solid var(--border-subtle);
 }
 
 .dialog-footer .btn {
@@ -721,7 +684,6 @@ function formatText(text: string): string {
 .dialog-footer .btn-ghost {
   background: transparent;
   border: 0.5px solid var(--border-default);
-  border: 0.5px solid var(--border-default);
   color: var(--text-secondary);
 }
 
@@ -731,7 +693,6 @@ function formatText(text: string): string {
 }
 
 .dialog-footer .btn-danger {
-  background: var(--error);
   background: var(--error);
   color: white;
   border: none;

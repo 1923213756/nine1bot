@@ -352,7 +352,7 @@ export function useSettings() {
     addMcp,
     removeMcp,
     healthMcp,
-    healthMcp,
+
     startOAuth,
     setApiKey,
     removeAuth,

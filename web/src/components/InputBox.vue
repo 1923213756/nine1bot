@@ -410,7 +410,6 @@ function formatSize(bytes: number): string {
   position: absolute;
   inset: 0;
   background: var(--accent-subtle);
-  background: var(--accent-subtle);
   border: 2px dashed var(--accent);
   border-radius: var(--radius-2xl);
   display: flex;
@@ -455,14 +454,12 @@ function formatSize(bytes: number): string {
 .attachment-chip.error {
   border-color: var(--error);
   background: var(--error-subtle);
-  background: var(--error-subtle);
 }
 
 .attachment-thumb {
   width: 32px;
   height: 32px;
   object-fit: cover;
-  border-radius: var(--radius-sm);
   border-radius: var(--radius-sm);
 }
 
@@ -472,8 +469,6 @@ function formatSize(bytes: number): string {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-tertiary);
-  border-radius: var(--radius-sm);
   background: var(--bg-tertiary);
   border-radius: var(--radius-sm);
   color: var(--text-muted);
@@ -611,9 +606,7 @@ function formatSize(bytes: number): string {
   border-radius: var(--radius-sm);
   border: none;
   cursor: pointer;
-  transition:
-    color var(--transition-fast),
-    background-color var(--transition-fast);
+  transition: all var(--transition-fast);
 }
 
 /* Plus (+) button - Attachment style */

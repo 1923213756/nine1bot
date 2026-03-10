@@ -113,9 +113,9 @@ export function createExtensionRelay(options: ExtensionRelayOptions): ExtensionR
       case 'Browser.getVersion':
         return {
           protocolVersion: '1.3',
-          product: 'Chrome/Browser-MCP-Extension-Relay',
+          product: 'Chrome/Nine1Bot-Extension-Relay',
           revision: '0',
-          userAgent: 'Browser-MCP-Extension-Relay',
+          userAgent: 'Nine1Bot-Extension-Relay',
           jsVersion: 'V8',
         }
 

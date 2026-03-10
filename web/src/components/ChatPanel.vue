@@ -305,7 +305,6 @@ function scrollToBottom() {
   font-weight: 400;
   cursor: pointer;
   transition: all var(--transition-normal);
-  transition: all var(--transition-normal);
 }
 
 .directory-btn:hover {

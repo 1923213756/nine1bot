@@ -58,8 +58,7 @@ const emit = defineEmits<{
   'abort-session': [sessionId: string]
   'open-settings': []
   'open-search': []
-  'open-settings': []
-  'open-search': []
+
   'change-directory': [directory: string]
   'switch-mode': [mode: AppMode]
   'select-project': [projectId: string]
@@ -232,8 +231,8 @@ function contextMenuDelete() {
         <div
           v-for="session in filteredSessions"
           :key="session.id"
-          class="recent-item"
-          :class="{ 
+          class="session-item"
+          :class="{
             active: !isDraftSession && currentSession?.id === session.id,
             running: isSessionRunning(session.id)
           }"
@@ -252,11 +251,9 @@ function contextMenuDelete() {
             <button
               v-if="isSessionRunning(session.id)"
               class="mini-btn abort"
-              class="mini-btn abort"
-              @click="emit('abort-session', session.id)"
               title="停止"
+              @click="emit('abort-session', session.id)"
             >
-              <Square :size="10" fill="currentColor" />
               <Square :size="10" fill="currentColor" />
             </button>
             <button class="mini-btn" @click="openContextMenu($event, session)" title="更多操作">
