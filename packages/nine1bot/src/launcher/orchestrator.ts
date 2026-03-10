@@ -5,7 +5,7 @@ import type { Nine1BotConfig } from '../config/schema'
 import { loadConfig, findConfigPath, getDefaultConfigPath } from '../config/loader'
 import { startServer, type ServerInstance } from './server'
 import { createTunnel, type TunnelManager } from '../tunnel'
-import { BridgeServer, type BridgeServerState } from '../../../browser-mcp-server/src/bridge/server'
+import { BridgeServer } from '../../../browser-mcp-server/src/bridge/server'
 
 const execFileAsync = promisify(execFile)
 
@@ -20,7 +20,6 @@ export interface LaunchOptions {
 export interface LaunchResult {
   server: ServerInstance
   tunnel?: TunnelManager
-  browserBridge?: BridgeServerState
   browserBridgeInstance?: BridgeServer
   localUrl: string
   publicUrl?: string
@@ -60,19 +59,17 @@ export async function launch(options: LaunchOptions = {}): Promise<LaunchResult>
   const localUrl = server.url || `http://${serverConfig.hostname}:${serverConfig.port}`
 
   // 2. 启动浏览器 Bridge Server（如果启用）
-  let browserBridge: BridgeServerState | undefined
   let browserBridgeInstance: BridgeServer | undefined
   const browserConfig = (config as any).browser
   if (browserConfig?.enabled) {
     try {
       browserBridgeInstance = new BridgeServer({
-        port: browserConfig.bridgePort ?? 18791,
         cdpPort: browserConfig.cdpPort ?? 9222,
         autoLaunch: browserConfig.autoLaunch ?? true,
         headless: browserConfig.headless ?? false,
       })
-      browserBridge = await browserBridgeInstance.start()
-      console.log(`\n🌐 Browser Bridge Server started at http://127.0.0.1:${browserBridge.port}`)
+      await browserBridgeInstance.start()
+      console.log(`\n🌐 Browser Bridge Server started (CDP port: ${browserConfig.cdpPort ?? 9222})`)
     } catch (error: any) {
       console.warn(`Failed to start Browser Bridge Server: ${error.message}`)
     }
@@ -120,7 +117,6 @@ export async function launch(options: LaunchOptions = {}): Promise<LaunchResult>
   return {
     server,
     tunnel,
-    browserBridge,
     browserBridgeInstance,
     localUrl,
     publicUrl,
