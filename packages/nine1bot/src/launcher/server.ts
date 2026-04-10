@@ -2,7 +2,7 @@ import { resolve, dirname, basename } from 'path'
 import { writeFile, mkdir } from 'fs/promises'
 import { tmpdir } from 'os'
 import type { ServerConfig, AuthConfig, Nine1BotConfig, CustomProvider } from '../config/schema'
-import { getInstallDir, getGlobalSkillsDir, getAuthPath, getGlobalConfigDir, getProjectEnvDir } from '../config/loader'
+import { getInstallDir, getGlobalSkillsDir, getAuthPath, getGlobalConfigDir, getMcpAuthPath, getProjectEnvDir } from '../config/loader'
 import { getGlobalPreferencesPath } from '../preferences'
 // 静态导入 OpenCode 服务器（编译时打包）
 import { Server as OpencodeServer } from '../../../../opencode/packages/opencode/src/server/server'
@@ -49,6 +49,22 @@ export interface StartServerOptions {
   auth: AuthConfig
   configPath: string
   fullConfig: Nine1BotConfig
+}
+
+function generateBrowserInstanceId(): string {
+  return `browser_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+function getBrowserServerOrigin(hostname: string, port: number): string {
+  const url = new URL('http://127.0.0.1')
+  const normalizedHostname = !hostname || hostname === '0.0.0.0'
+    ? '127.0.0.1'
+    : hostname === '::'
+      ? '::1'
+      : hostname
+  url.hostname = normalizedHostname
+  url.port = String(port)
+  return url.toString().replace(/\/$/, '')
 }
 
 /**
@@ -209,6 +225,7 @@ export async function startServer(options: StartServerOptions): Promise<ServerIn
   // 设置 Nine1Bot 独立的认证存储路径
   await mkdir(getGlobalConfigDir(), { recursive: true })
   process.env.NINE1BOT_AUTH_PATH = getAuthPath()
+  process.env.NINE1BOT_MCP_AUTH_PATH = getMcpAuthPath()
   await mkdir(getProjectEnvDir(), { recursive: true })
   process.env.NINE1BOT_PROJECT_ENV_DIR = getProjectEnvDir()
 
@@ -238,14 +255,17 @@ export async function startServer(options: StartServerOptions): Promise<ServerIn
   const browserConfig = (fullConfig as any).browser
   if (browserConfig?.enabled) {
     try {
+      const serverOrigin = getBrowserServerOrigin(server.hostname, server.port)
       bridgeServer = new BridgeServer({
         cdpPort: browserConfig.cdpPort ?? 9222,
         autoLaunch: browserConfig.autoLaunch ?? true,
         headless: browserConfig.headless ?? false,
+        serverOrigin,
+        instanceId: generateBrowserInstanceId(),
       })
       await bridgeServer.start()
       setBridgeServer(bridgeServer)
-      console.log('[Nine1Bot] Browser control enabled at /browser/')
+      console.log(`[Nine1Bot] Browser control enabled at ${serverOrigin}/browser/`)
     } catch (error: any) {
       console.warn(`[Nine1Bot] Failed to initialize browser bridge: ${error.message}`)
     }

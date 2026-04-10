@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { X, Server, Loader2, Plug, Unplug, Plus } from 'lucide-vue-next'
 import { mcpApi } from '../api/client'
 import type { McpServer, McpConfig } from '../api/client'
+import { authenticateMcpWithPopup } from '../utils/mcp-auth'
 
 defineProps<{
   currentDirectory?: string
@@ -44,6 +45,18 @@ async function connectServer(name: string) {
   }
 }
 
+async function authenticateServer(name: string) {
+  try {
+    await authenticateMcpWithPopup(name, {
+      onUpdate: (next) => {
+        servers.value = next
+      },
+    })
+  } catch (e) {
+    console.error('Failed to authenticate MCP server:', e)
+  }
+}
+
 async function disconnectServer(name: string) {
   try {
     await mcpApi.disconnect(name)
@@ -66,9 +79,11 @@ function getStatusText(status: string): string {
   switch (status) {
     case 'connected': return 'Connected'
     case 'connecting': return 'Connecting...'
+    case 'auth_in_progress': return 'Authorizing...'
     case 'disabled': return 'Disconnected'
     case 'failed': return 'Failed'
     case 'needs_auth': return 'Auth Required'
+    case 'needs_client_registration': return 'Static Client Required'
     default: return status
   }
 }
@@ -253,6 +268,14 @@ onMounted(loadServers)
               title="Disconnect"
             >
               <Unplug :size="14" />
+            </button>
+            <button
+              v-else-if="server.status === 'needs_auth'"
+              class="mcp-action-btn connect"
+              @click="authenticateServer(server.name)"
+              title="Authenticate"
+            >
+              <Plug :size="14" />
             </button>
             <Loader2 v-else-if="server.status === 'connecting'" :size="14" class="spin" />
           </div>
