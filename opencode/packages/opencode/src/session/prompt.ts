@@ -1,6 +1,7 @@
 import path from "path"
 import os from "os"
 import fs from "fs/promises"
+import { pathToFileURL } from "url"
 import z from "zod"
 import { Identifier } from "../id/id"
 import { MessageV2 } from "./message-v2"
@@ -25,7 +26,6 @@ import { clone } from "remeda"
 import { ToolRegistry } from "../tool/registry"
 import { MCP } from "../mcp"
 import { LSP } from "../lsp"
-import { ReadTool } from "../tool/read"
 import { ListTool } from "../tool/ls"
 import { FileTime } from "../file/time"
 import { Flag } from "../flag/flag"
@@ -54,6 +54,132 @@ globalThis.AI_SDK_LOG_WARNINGS = false
 export namespace SessionPrompt {
   const log = Log.create({ service: "session.prompt" })
   export const OUTPUT_TOKEN_MAX = Flag.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 32_000
+  const uploadedFileTypeMap: Record<string, { type: string; skill?: string }> = {
+    "application/pdf": { type: "PDF", skill: "pdf" },
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": { type: "Word document", skill: "docx" },
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": { type: "PowerPoint presentation", skill: "pptx" },
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": { type: "Excel spreadsheet", skill: "xlsx" },
+    "application/msword": { type: "Word document (legacy)", skill: "docx" },
+    "application/vnd.ms-powerpoint": { type: "PowerPoint presentation (legacy)", skill: "pptx" },
+    "application/vnd.ms-excel": { type: "Excel spreadsheet (legacy)", skill: "xlsx" },
+  }
+
+  function describeUploadedFile(mime: string) {
+    const fileInfo = uploadedFileTypeMap[mime]
+    const fileTypeDesc = fileInfo ? `a ${fileInfo.type}` : mime.startsWith("image/") ? "an image" : "a file"
+    const skillHint = fileInfo?.skill
+      ? `, or invoke the appropriate skill (e.g., /${fileInfo.skill}) for advanced operations`
+      : ""
+    return {
+      fileTypeDesc,
+      skillHint,
+    }
+  }
+
+  function sanitizeUploadFilename(filename?: string) {
+    const basename = path.basename((filename || "").replace(/\0/g, "")).trim()
+    const cleaned = basename
+      .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+      .replace(/[. ]+$/g, "")
+    return cleaned || `upload-${Date.now()}`
+  }
+
+  async function pathExists(target: string) {
+    try {
+      await fs.stat(target)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  async function createManagedUploadTarget(session: Session.Info, filename?: string) {
+    const uploadsDir = Session.uploadsDirectory(session)
+    await fs.mkdir(uploadsDir, { recursive: true })
+
+    const initialName = sanitizeUploadFilename(filename)
+    const parsed = path.parse(initialName)
+    const ext = parsed.ext
+    const baseName = parsed.name || "upload"
+
+    let attempt = 0
+    let resolvedName = initialName
+    let uploadFilePath = path.join(uploadsDir, resolvedName)
+
+    while (await pathExists(uploadFilePath)) {
+      attempt += 1
+      resolvedName = `${baseName}-${attempt}${ext}`
+      uploadFilePath = path.join(uploadsDir, resolvedName)
+    }
+
+    const tempFilePath = path.join(
+      uploadsDir,
+      `.${baseName}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}.part`,
+    )
+
+    return {
+      filename: resolvedName,
+      uploadFilePath,
+      tempFilePath,
+    }
+  }
+
+  async function writeManagedUpload(session: Session.Info, filename: string | undefined, content: Buffer) {
+    const target = await createManagedUploadTarget(session, filename)
+    await fs.writeFile(target.tempFilePath, content)
+    await fs.rename(target.tempFilePath, target.uploadFilePath)
+    return target
+  }
+
+  function decodeDataUrlContent(url: string) {
+    const match = url.match(/^data:([^,]*?),(.*)$/s)
+    if (!match) {
+      throw new Error("Invalid data URL attachment")
+    }
+    const metadata = match[1]
+    const payload = match[2]
+    if (metadata.includes(";base64")) {
+      return Buffer.from(payload, "base64")
+    }
+    return Buffer.from(decodeURIComponent(payload), "utf8")
+  }
+
+  function createManagedUploadParts(
+    input: { sessionID: string },
+    info: MessageV2.Info,
+    part: {
+      id?: string
+      type: "file"
+      mime: string
+      filename?: string
+      url: string
+      source?: MessageV2.FilePart["source"]
+    },
+    uploadFilePath: string,
+    filename?: string,
+  ) {
+    const { fileTypeDesc, skillHint } = describeUploadedFile(part.mime)
+    const displayName = filename || part.filename || path.basename(uploadFilePath)
+
+    return [
+      {
+        id: Identifier.ascending("part"),
+        messageID: info.id,
+        sessionID: input.sessionID,
+        type: "text" as const,
+        synthetic: true,
+        text: `User uploaded ${fileTypeDesc}: ${displayName}\nFile saved to: ${uploadFilePath}\n\nTo read or process this file, use the Read tool with the file path${skillHint}.`,
+      },
+      {
+        ...part,
+        id: part.id ?? Identifier.ascending("part"),
+        messageID: info.id,
+        sessionID: input.sessionID,
+        filename: displayName,
+        url: pathToFileURL(uploadFilePath).href,
+      },
+    ]
+  }
 
   const state = Instance.state(
     () => {
@@ -998,87 +1124,14 @@ export namespace SessionPrompt {
           const url = new URL(part.url)
           switch (url.protocol) {
             case "data:":
-              if (part.mime === "text/plain") {
-                return [
-                  {
-                    id: Identifier.ascending("part"),
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                    type: "text",
-                    synthetic: true,
-                    text: `Called the Read tool with the following input: ${JSON.stringify({ filePath: part.filename })}`,
-                  },
-                  {
-                    id: Identifier.ascending("part"),
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                    type: "text",
-                    synthetic: true,
-                    text: Buffer.from(part.url, "base64url").toString(),
-                  },
-                  {
-                    ...part,
-                    id: part.id ?? Identifier.ascending("part"),
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                  },
-                ]
-              }
-              // Handle all non-text files (images, documents, etc.) - save to uploads directory
               {
-                const base64Match = part.url.match(/^data:[^;]+;base64,(.+)$/)
-                if (base64Match) {
-                  const base64Data = base64Match[1]
-                  const buffer = Buffer.from(base64Data, "base64")
+                const buffer = decodeDataUrlContent(part.url)
+                const saved = await writeManagedUpload(session, part.filename, buffer)
 
-                  // Save to project's .nine1bot/uploads directory (within sandbox)
-                  const uploadsDir = path.join(session.directory, ".nine1bot", "uploads", input.sessionID)
-                  await fs.mkdir(uploadsDir, { recursive: true })
-                  const uploadFilePath = path.join(uploadsDir, part.filename || `upload-${Date.now()}`)
-                  await fs.writeFile(uploadFilePath, buffer)
+                log.info("saved uploaded file", { path: saved.uploadFilePath, mime: part.mime })
 
-                  log.info("saved uploaded file", { path: uploadFilePath, mime: part.mime })
-
-                  // Determine file type description and skill hint
-                  const fileTypeMap: Record<string, { type: string; skill: string }> = {
-                    "application/pdf": { type: "PDF", skill: "pdf" },
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": { type: "Word document", skill: "docx" },
-                    "application/vnd.openxmlformats-officedocument.presentationml.presentation": { type: "PowerPoint presentation", skill: "pptx" },
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": { type: "Excel spreadsheet", skill: "xlsx" },
-                    "application/msword": { type: "Word document (legacy)", skill: "docx" },
-                    "application/vnd.ms-powerpoint": { type: "PowerPoint presentation (legacy)", skill: "pptx" },
-                    "application/vnd.ms-excel": { type: "Excel spreadsheet (legacy)", skill: "xlsx" },
-                  }
-                  // Generate file type description
-                  const fileInfo = fileTypeMap[part.mime]
-                  const fileTypeDesc = fileInfo
-                    ? `a ${fileInfo.type}`
-                    : part.mime.startsWith("image/")
-                      ? "an image"
-                      : "a file"
-
-                  const skillHint = fileInfo?.skill ? `, or invoke the appropriate skill (e.g., /${fileInfo.skill}) for advanced operations` : ""
-                  return [
-                    {
-                      id: Identifier.ascending("part"),
-                      messageID: info.id,
-                      sessionID: input.sessionID,
-                      type: "text",
-                      synthetic: true,
-                      text: `User uploaded ${fileTypeDesc}: ${part.filename}\nFile saved to: ${uploadFilePath}\n\nTo read or process this file, use the Read tool with the file path${skillHint}.`,
-                    },
-                    {
-                      ...part,
-                      id: part.id ?? Identifier.ascending("part"),
-                      messageID: info.id,
-                      sessionID: input.sessionID,
-                      // Replace data URL with file URL to avoid sending large base64 to model
-                      url: `file://${uploadFilePath}`,
-                    },
-                  ]
-                }
+                return createManagedUploadParts(input, info, part, saved.uploadFilePath, saved.filename)
               }
-              break
             case "file:":
               log.info("file", { mime: part.mime })
               // have to normalize, symbol search returns absolute paths
@@ -1088,118 +1141,6 @@ export namespace SessionPrompt {
 
               if (stat.isDirectory()) {
                 part.mime = "application/x-directory"
-              }
-
-              if (part.mime === "text/plain") {
-                let offset: number | undefined = undefined
-                let limit: number | undefined = undefined
-                const range = {
-                  start: url.searchParams.get("start"),
-                  end: url.searchParams.get("end"),
-                }
-                if (range.start != null) {
-                  const filePathURI = part.url.split("?")[0]
-                  let start = parseInt(range.start)
-                  let end = range.end ? parseInt(range.end) : undefined
-                  // some LSP servers (eg, gopls) don't give full range in
-                  // workspace/symbol searches, so we'll try to find the
-                  // symbol in the document to get the full range
-                  if (start === end) {
-                    const symbols = await LSP.documentSymbol(filePathURI)
-                    for (const symbol of symbols) {
-                      let range: LSP.Range | undefined
-                      if ("range" in symbol) {
-                        range = symbol.range
-                      } else if ("location" in symbol) {
-                        range = symbol.location.range
-                      }
-                      if (range?.start?.line && range?.start?.line === start) {
-                        start = range.start.line
-                        end = range?.end?.line ?? start
-                        break
-                      }
-                    }
-                  }
-                  offset = Math.max(start - 1, 0)
-                  if (end) {
-                    limit = end - offset
-                  }
-                }
-                const args = { filePath: filepath, offset, limit }
-
-                const pieces: MessageV2.Part[] = [
-                  {
-                    id: Identifier.ascending("part"),
-                    messageID: info.id,
-                    sessionID: input.sessionID,
-                    type: "text",
-                    synthetic: true,
-                    text: `Called the Read tool with the following input: ${JSON.stringify(args)}`,
-                  },
-                ]
-
-                await ReadTool.init()
-                  .then(async (t) => {
-                    const model = await Provider.getModel(info.model.providerID, info.model.modelID)
-                    const readCtx: Tool.Context = {
-                      sessionID: input.sessionID,
-                      abort: new AbortController().signal,
-                      agent: input.agent!,
-                      messageID: info.id,
-                      cwd: session.directory,
-                      extra: { bypassCwdCheck: true, model },
-                      messages: [],
-                      metadata: async () => {},
-                      ask: async () => {},
-                    }
-                    const result = await t.execute(args, readCtx)
-                    pieces.push({
-                      id: Identifier.ascending("part"),
-                      messageID: info.id,
-                      sessionID: input.sessionID,
-                      type: "text",
-                      synthetic: true,
-                      text: result.output,
-                    })
-                    if (result.attachments?.length) {
-                      pieces.push(
-                        ...result.attachments.map((attachment) => ({
-                          ...attachment,
-                          synthetic: true,
-                          filename: attachment.filename ?? part.filename,
-                          messageID: info.id,
-                          sessionID: input.sessionID,
-                        })),
-                      )
-                    } else {
-                      pieces.push({
-                        ...part,
-                        id: part.id ?? Identifier.ascending("part"),
-                        messageID: info.id,
-                        sessionID: input.sessionID,
-                      })
-                    }
-                  })
-                  .catch((error) => {
-                    log.error("failed to read file", { error })
-                    const message = error instanceof Error ? error.message : error.toString()
-                    Bus.publish(Session.Event.Error, {
-                      sessionID: input.sessionID,
-                      error: new NamedError.Unknown({
-                        message,
-                      }).toObject(),
-                    })
-                    pieces.push({
-                      id: Identifier.ascending("part"),
-                      messageID: info.id,
-                      sessionID: input.sessionID,
-                      type: "text",
-                      synthetic: true,
-                      text: `Read tool failed to read ${filepath} with the following error: ${message}`,
-                    })
-                  })
-
-                return pieces
               }
 
               if (part.mime === "application/x-directory") {
@@ -1242,28 +1183,8 @@ export namespace SessionPrompt {
                 ]
               }
 
-              const file = Bun.file(filepath)
               FileTime.read(input.sessionID, filepath)
-              return [
-                {
-                  id: Identifier.ascending("part"),
-                  messageID: info.id,
-                  sessionID: input.sessionID,
-                  type: "text",
-                  text: `Called the Read tool with the following input: {\"filePath\":\"${filepath}\"}`,
-                  synthetic: true,
-                },
-                {
-                  id: part.id ?? Identifier.ascending("part"),
-                  messageID: info.id,
-                  sessionID: input.sessionID,
-                  type: "file",
-                  url: `data:${part.mime};base64,` + Buffer.from(await file.bytes()).toString("base64"),
-                  mime: part.mime,
-                  filename: part.filename!,
-                  source: part.source,
-                },
-              ]
+              return createManagedUploadParts(input, info, part, filepath, part.filename ?? path.basename(filepath))
           }
         }
 

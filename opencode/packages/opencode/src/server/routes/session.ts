@@ -1,6 +1,12 @@
-import { Hono } from "hono"
+import { Hono, type Context } from "hono"
 import { stream } from "hono/streaming"
 import { describeRoute, validator, resolver } from "hono-openapi"
+import path from "path"
+import fs from "fs/promises"
+import { createWriteStream } from "fs"
+import { Readable } from "stream"
+import { pathToFileURL } from "url"
+import Busboy from "@fastify/busboy"
 import z from "zod"
 import { Session } from "../../session"
 import { MessageV2 } from "../../session/message-v2"
@@ -14,10 +20,225 @@ import { Agent } from "../../agent/agent"
 import { Snapshot } from "@/snapshot"
 import { Log } from "../../util/log"
 import { PermissionNext } from "@/permission/next"
+import { Filesystem } from "@/util/filesystem"
 import { errors } from "../error"
 import { lazy } from "../../util/lazy"
 
 const log = Log.create({ service: "server" })
+const SESSION_UPLOAD_MAX_BYTES = 500 * 1024 * 1024
+const SessionUploadResponse = z.object({
+  type: z.literal("file"),
+  filename: z.string(),
+  mime: z.string(),
+  url: z.string(),
+  size: z.number(),
+})
+
+function sanitizeUploadFilename(filename?: string) {
+  const basename = path.basename((filename || "").replace(/\0/g, "")).trim()
+  const cleaned = basename
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+    .replace(/[. ]+$/g, "")
+  return cleaned || `upload-${Date.now()}`
+}
+
+async function pathExists(target: string) {
+  try {
+    await fs.stat(target)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function createUploadTarget(session: Pick<Session.Info, "id" | "directory">, originalFilename?: string) {
+  const uploadsDir = path.resolve(Session.uploadsDirectory(session))
+  await fs.mkdir(uploadsDir, { recursive: true })
+
+  const initialName = sanitizeUploadFilename(originalFilename)
+  const parsed = path.parse(initialName)
+  const ext = parsed.ext
+  const baseName = parsed.name || "upload"
+
+  let attempt = 0
+  let filename = initialName
+  let filePath = path.resolve(path.join(uploadsDir, filename))
+
+  while (await pathExists(filePath)) {
+    attempt += 1
+    filename = `${baseName}-${attempt}${ext}`
+    filePath = path.resolve(path.join(uploadsDir, filename))
+  }
+
+  if (!Filesystem.contains(uploadsDir, filePath)) {
+    throw new Error("Resolved upload path is outside the managed uploads directory")
+  }
+
+  const tempFilePath = path.join(uploadsDir, `.${baseName}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}.part`)
+  return { filename, filePath, tempFilePath }
+}
+
+async function handleSessionUpload(c: Context) {
+  const sessionID = c.req.param("sessionID")
+  const session = await Session.get(sessionID)
+  const contentType = c.req.header("content-type") || ""
+
+  if (!contentType.toLowerCase().includes("multipart/form-data")) {
+    return c.json({ error: "Expected multipart/form-data upload body" }, 400)
+  }
+
+  if (!c.req.raw.body) {
+    return c.json({ error: "Missing upload body" }, 400)
+  }
+
+  const headers = Object.fromEntries(c.req.raw.headers.entries()) as { "content-type": string }
+
+  return await new Promise<Response>((resolve) => {
+    let settled = false
+    let source: Readable | null = null
+    let tempFilePath: string | undefined
+    let finalFilePath: string | undefined
+    let fileSeen = false
+    let parseError: { status: number; message: string } | null = null
+    let uploadedFile: z.infer<typeof SessionUploadResponse> | null = null
+    let fileWritePromise: Promise<void> | null = null
+
+    const cleanupFiles = async (removeFinal = false) => {
+      if (tempFilePath) {
+        await fs.rm(tempFilePath, { force: true }).catch(() => {})
+      }
+      if (removeFinal && finalFilePath) {
+        await fs.rm(finalFilePath, { force: true }).catch(() => {})
+      }
+    }
+
+    const settle = async (status: number, payload: unknown) => {
+      if (settled) return
+      settled = true
+      c.req.raw.signal.removeEventListener("abort", onAbort)
+      await cleanupFiles(status !== 200)
+      resolve(c.json(payload, status as never))
+    }
+
+    const fail = async (status: number, error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error)
+      await settle(status, { error: message })
+    }
+
+    const onAbort = () => {
+      source?.destroy(new Error("Upload aborted"))
+    }
+
+    const busboy = new Busboy({
+      headers,
+      limits: {
+        files: 1,
+        fields: 0,
+        parts: 1,
+        fileSize: SESSION_UPLOAD_MAX_BYTES,
+      },
+    })
+
+    c.req.raw.signal.addEventListener("abort", onAbort, { once: true })
+
+    busboy.on("file", (fieldname, file, filename, _encoding, mimeType) => {
+      if (fieldname !== "file") {
+        parseError = parseError ?? { status: 400, message: 'Invalid upload field. Use field name "file".' }
+        file.resume()
+        return
+      }
+
+      fileSeen = true
+      fileWritePromise = (async () => {
+        const target = await createUploadTarget(session, filename)
+        tempFilePath = target.tempFilePath
+        finalFilePath = target.filePath
+
+        await new Promise<void>((resolveWrite, rejectWrite) => {
+          const writer = createWriteStream(tempFilePath!, { flags: "wx" })
+          let limitTriggered = false
+
+          file.on("limit", () => {
+            limitTriggered = true
+            file.unpipe(writer)
+            file.resume()
+            writer.destroy(new Error("Uploaded file exceeds the 500MB limit"))
+          })
+          file.on("error", rejectWrite)
+          writer.on("error", (error) => {
+            rejectWrite(limitTriggered ? Object.assign(new Error("Uploaded file exceeds the 500MB limit"), { status: 413 }) : error)
+          })
+          writer.on("finish", resolveWrite)
+          file.pipe(writer)
+        })
+
+        if (file.truncated) {
+          throw Object.assign(new Error("Uploaded file exceeds the 500MB limit"), { status: 413 })
+        }
+
+        await fs.rename(tempFilePath, finalFilePath)
+        tempFilePath = undefined
+        uploadedFile = {
+          type: "file",
+          filename: target.filename,
+          mime: mimeType || "application/octet-stream",
+          url: pathToFileURL(finalFilePath).href,
+          size: file.bytesRead,
+        }
+      })()
+    })
+
+    busboy.on("filesLimit", () => {
+      parseError = parseError ?? { status: 400, message: "Only one file may be uploaded at a time" }
+    })
+    busboy.on("fieldsLimit", () => {
+      parseError = parseError ?? { status: 400, message: "Unexpected form fields in upload request" }
+    })
+    busboy.on("partsLimit", () => {
+      parseError = parseError ?? { status: 400, message: "Only one file may be uploaded at a time" }
+    })
+    busboy.on("error", async (error) => {
+      await fail(400, error)
+    })
+    busboy.on("finish", async () => {
+      try {
+        if (parseError) {
+          await settle(parseError.status, { error: parseError.message })
+          return
+        }
+        if (!fileSeen) {
+          await settle(400, { error: 'Missing upload field "file"' })
+          return
+        }
+        if (fileWritePromise) {
+          await fileWritePromise
+        }
+        if (!uploadedFile) {
+          await settle(500, { error: "Upload failed before the file was finalized" })
+          return
+        }
+        await settle(200, uploadedFile)
+      } catch (error) {
+        const status = error instanceof Error && "status" in error && error.status === 413 ? 413 : 500
+        await fail(status, error)
+      }
+    })
+
+    try {
+      source = Readable.fromWeb(c.req.raw.body as any)
+      source.on("error", async (error) => {
+        if (c.req.raw.signal.aborted) {
+          await fail(400, "Upload aborted")
+          return
+        }
+        await fail(500, error)
+      })
+      source.pipe(busboy)
+    } catch (error) {
+      void fail(500, error)
+    }
+  })
+}
 
 export const SessionRoutes = lazy(() =>
   new Hono()
@@ -704,6 +925,37 @@ export const SessionRoutes = lazy(() =>
         }
         const part = await Session.updatePart(body)
         return c.json(part)
+      },
+    )
+    .post(
+      "/:sessionID/upload",
+      describeRoute({
+        summary: "Upload session file",
+        description: "Upload a single chat attachment directly into the managed session uploads directory.",
+        operationId: "session.upload",
+        responses: {
+          200: {
+            description: "Uploaded file reference",
+            content: {
+              "application/json": {
+                schema: resolver(SessionUploadResponse),
+              },
+            },
+          },
+          ...errors(400, 404),
+          413: {
+            description: "Uploaded file exceeds the configured limit",
+          },
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: z.string().meta({ description: "Session ID" }),
+        }),
+      ),
+      async (c) => {
+        return handleSessionUpload(c)
       },
     )
     .post(

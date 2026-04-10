@@ -207,17 +207,9 @@ export function useSession() {
     files?: Array<{ type: 'file'; mime: string; filename: string; url: string }>
   ) {
     // 如果是草稿模式或没有当前会话，先创建会话
-    if (isDraftSession.value || !currentSession.value) {
-      try {
-        await _createSessionInternal(currentDirectory.value || '.')
-      } catch (error) {
-        console.error('Failed to create session before sending message:', error)
-        sessionError.value = {
-          message: '创建会话失败，请重试',
-          dismissable: true
-        }
-        return
-      }
+    const ensuredSession = await ensureSession()
+    if (!ensuredSession) {
+      return
     }
 
     if (!currentSession.value) return
@@ -293,6 +285,23 @@ export function useSession() {
     } finally {
       streamingMessage.value = null
       // Note: Don't set running to false here - SSE events will handle that via session.idle
+    }
+  }
+
+  async function ensureSession(): Promise<Session | null> {
+    if (!isDraftSession.value && currentSession.value) {
+      return currentSession.value
+    }
+
+    try {
+      return await _createSessionInternal(currentDirectory.value || '.')
+    } catch (error) {
+      console.error('Failed to ensure session:', error)
+      sessionError.value = {
+        message: '创建会话失败，请重试',
+        dismissable: true
+      }
+      return null
     }
   }
 
@@ -853,6 +862,7 @@ export function useSession() {
     retryInfo,
     loadSessions,
     createSession,
+    ensureSession,
     selectSession,
     sendMessage,
     abortSession,

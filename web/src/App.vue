@@ -40,6 +40,7 @@ const {
   retryInfo,
   loadSessions,
   createSession,
+  ensureSession,
   selectSession,
   sendMessage,
   abortSession,
@@ -368,6 +369,11 @@ async function handleSend(content: string, files?: Array<{ type: 'file'; mime: s
   await sendMessage(finalContent, model, files)
 }
 
+async function ensureCurrentSessionId() {
+  const session = await ensureSession()
+  return session?.id ?? null
+}
+
 function handleNewSession() {
   showProjectsPage.value = false
   createSession(currentDirectory.value || '.')
@@ -644,6 +650,7 @@ function handlePromptSelect(prompt: string) {
               :disabled="isLoading"
               :isStreaming="isStreaming"
               :centered="true"
+              :ensureSession="ensureCurrentSessionId"
               :providers="providers"
               :currentProvider="currentProvider"
               :currentModel="currentModel"
@@ -690,6 +697,7 @@ function handlePromptSelect(prompt: string) {
             :disabled="isLoading"
             :isStreaming="isStreaming"
             :centered="false"
+            :ensureSession="ensureCurrentSessionId"
             :providers="providers"
             :currentProvider="currentProvider"
             :currentModel="currentModel"

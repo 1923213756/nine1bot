@@ -177,6 +177,14 @@ export interface FilePart {
   url: string
 }
 
+export interface SessionUploadResponse {
+  type: 'file'
+  filename: string
+  mime: string
+  url: string
+  size: number
+}
+
 export interface ToolState {
   status: 'pending' | 'running' | 'completed' | 'error'
   input?: Record<string, any>
@@ -353,6 +361,86 @@ export const api = {
     } catch (error) {
       onError?.(error as Error)
     }
+  },
+
+  async uploadSessionFile(
+    sessionId: string,
+    file: File,
+    options: {
+      onProgress?: (progress: number) => void
+      signal?: AbortSignal
+    } = {}
+  ): Promise<SessionUploadResponse> {
+    return await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      const url = applyDirectoryToUrl(`${BASE_URL}/session/${sessionId}/upload`)
+      const headers = new Headers(applyDirectoryHeaders({}).headers || {})
+      let settled = false
+
+      const cleanup = () => {
+        options.signal?.removeEventListener('abort', handleAbort)
+      }
+
+      const handleAbort = () => {
+        if (!settled) {
+          xhr.abort()
+        }
+      }
+
+      options.signal?.addEventListener('abort', handleAbort, { once: true })
+
+      xhr.open('POST', url)
+      headers.forEach((value, key) => {
+        xhr.setRequestHeader(key, value)
+      })
+
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable || !options.onProgress) return
+        const progress = Math.min(100, Math.round((event.loaded / event.total) * 100))
+        options.onProgress(progress)
+      }
+
+      xhr.onerror = () => {
+        settled = true
+        cleanup()
+        reject(new Error('上传失败，网络连接中断'))
+      }
+
+      xhr.onabort = () => {
+        settled = true
+        cleanup()
+        reject(new DOMException('Upload aborted', 'AbortError'))
+      }
+
+      xhr.onload = () => {
+        settled = true
+        cleanup()
+
+        let payload: any = null
+        try {
+          payload = xhr.responseText ? JSON.parse(xhr.responseText) : null
+        } catch {
+          payload = null
+        }
+
+        if (xhr.status >= 200 && xhr.status < 300) {
+          options.onProgress?.(100)
+          resolve(payload?.data || payload)
+          return
+        }
+
+        const message =
+          payload?.error ||
+          payload?.message ||
+          payload?.data?.error ||
+          `HTTP error! status: ${xhr.status}`
+        reject(new Error(message))
+      }
+
+      const formData = new FormData()
+      formData.append('file', file, file.name)
+      xhr.send(formData)
+    })
   },
 
   // 中止会话

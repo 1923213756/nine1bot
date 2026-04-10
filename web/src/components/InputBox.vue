@@ -8,6 +8,7 @@ const props = defineProps<{
   disabled: boolean
   isStreaming: boolean
   centered?: boolean
+  ensureSession?: () => Promise<string | null>
   providers?: Provider[]
   currentProvider?: string
   currentModel?: string
@@ -43,13 +44,16 @@ const plusMenuRef = ref<HTMLElement>()
 const showModelDropdown = ref(false)
 const modelDropdownRef = ref<HTMLElement>()
 
-const { attachments, uploadError, addFiles, removeFile, clearAll, clearError, toMessageParts } = useFileUpload()
+const { attachments, uploadError, addFiles, removeFile, clearAll, clearError, toMessageParts } = useFileUpload({
+  ensureSessionId: async () => await props.ensureSession?.() ?? null
+})
 
-// Can send if has text or has ready attachments
+// Can send if there is content and every attachment is ready
 const canSend = computed(() => {
   const hasText = input.value.trim().length > 0
-  const hasFiles = attachments.value.some(a => a.status === 'ready')
-  return (hasText || hasFiles) && !props.disabled
+  const hasAttachments = attachments.value.length > 0
+  const allAttachmentsReady = attachments.value.every(a => a.status === 'ready')
+  return (hasText || hasAttachments) && allAttachmentsReady && !props.disabled
 })
 
 function getCurrentModelName(): string {
@@ -125,7 +129,7 @@ function handleFileChange(e: Event) {
   const target = e.target as HTMLInputElement
   if (target.files) {
     clearError()
-    addFiles(target.files)
+    void addFiles(target.files)
     target.value = ''
   }
 }
@@ -135,7 +139,7 @@ function handleDrop(e: DragEvent) {
   isDragging.value = false
   if (e.dataTransfer?.files) {
     clearError()
-    addFiles(e.dataTransfer.files)
+    void addFiles(e.dataTransfer.files)
   }
 }
 
@@ -171,7 +175,7 @@ function handlePaste(e: ClipboardEvent) {
   if (imageFiles.length > 0) {
     e.preventDefault()
     clearError()
-    addFiles(imageFiles)
+    void addFiles(imageFiles)
   }
 }
 
@@ -234,7 +238,8 @@ function formatSize(bytes: number): string {
             <span class="attachment-name">{{ file.filename }}</span>
             <span class="attachment-size">{{ formatSize(file.size) }}</span>
           </div>
-          <span v-if="file.status === 'processing'" class="attachment-status processing">...</span>
+          <span v-if="file.status === 'selected'" class="attachment-status processing">队列中</span>
+          <span v-else-if="file.status === 'uploading'" class="attachment-status processing">{{ file.progress }}%</span>
           <span v-else-if="file.status === 'error'" class="attachment-status error">!</span>
           <button @click.stop="removeFile(file.id)" class="attachment-remove" title="Remove">
             <X :size="14" />
