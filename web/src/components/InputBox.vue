@@ -43,7 +43,7 @@ const plusMenuRef = ref<HTMLElement>()
 const showModelDropdown = ref(false)
 const modelDropdownRef = ref<HTMLElement>()
 
-const { attachments, addFiles, removeFile, clearAll, toMessageParts } = useFileUpload()
+const { attachments, uploadError, addFiles, removeFile, clearAll, clearError, toMessageParts } = useFileUpload()
 
 // Can send if has text or has ready attachments
 const canSend = computed(() => {
@@ -124,6 +124,7 @@ function handleFileSelect() {
 function handleFileChange(e: Event) {
   const target = e.target as HTMLInputElement
   if (target.files) {
+    clearError()
     addFiles(target.files)
     target.value = ''
   }
@@ -133,6 +134,7 @@ function handleDrop(e: DragEvent) {
   e.preventDefault()
   isDragging.value = false
   if (e.dataTransfer?.files) {
+    clearError()
     addFiles(e.dataTransfer.files)
   }
 }
@@ -168,6 +170,7 @@ function handlePaste(e: ClipboardEvent) {
 
   if (imageFiles.length > 0) {
     e.preventDefault()
+    clearError()
     addFiles(imageFiles)
   }
 }
@@ -240,6 +243,10 @@ function formatSize(bytes: number): string {
       </div>
     </div>
 
+    <div v-if="uploadError" class="upload-error">
+      {{ uploadError }}
+    </div>
+
     <!-- Plan Mode 指示器 -->
     <div v-if="isPlanMode" class="plan-mode-indicator">
       <ClipboardList :size="14" />
@@ -256,7 +263,6 @@ function formatSize(bytes: number): string {
         ref="fileInputRef"
         type="file"
         multiple
-        accept="image/*,.pdf,.docx,.doc,.pptx,.ppt,.xlsx,.xls,.txt,.md,.csv,.json,.xml"
         style="display: none"
         @change="handleFileChange"
       />
@@ -431,6 +437,17 @@ function formatSize(bytes: number): string {
 /* Attachments */
 .attachments-container {
   margin-bottom: 8px;
+}
+
+.upload-error {
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border: 0.5px solid var(--error);
+  border-radius: var(--radius-md);
+  background: var(--error-subtle);
+  color: var(--error);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .attachments-list {

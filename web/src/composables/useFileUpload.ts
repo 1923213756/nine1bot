@@ -12,7 +12,7 @@ export interface FileAttachment {
   size: number
 }
 
-// Supported image types
+// Supported image types (for previews only)
 const SUPPORTED_IMAGE_TYPES = [
   'image/jpeg',
   'image/png',
@@ -21,35 +21,30 @@ const SUPPORTED_IMAGE_TYPES = [
   'image/bmp'
 ]
 
-// Supported document types
-const SUPPORTED_DOCUMENT_TYPES = [
-  'application/pdf',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation', // .pptx
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
-  'application/msword', // .doc
-  'application/vnd.ms-powerpoint', // .ppt
-  'application/vnd.ms-excel', // .xls
-  'text/plain',
-  'text/markdown',
-  'text/csv',
-  'application/json',
-  'application/xml',
-  'text/xml'
-]
+// Max file size: 20MB for chat uploads to avoid oversized JSON/data URL payloads
+const MAX_FILE_SIZE = 20 * 1024 * 1024
 
-// File extensions for fallback detection (when MIME type is generic)
-const DOCUMENT_EXTENSIONS = [
-  '.pdf', '.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls',
-  '.txt', '.md', '.csv', '.json', '.xml'
-]
+function createAttachmentId(): string {
+  if (typeof crypto !== 'undefined') {
+    if (typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID()
+    }
 
-// Max file size: 20MB for images, 10MB for documents
-const MAX_IMAGE_SIZE = 20 * 1024 * 1024
-const MAX_DOCUMENT_SIZE = 10 * 1024 * 1024
+    if (typeof crypto.getRandomValues === 'function') {
+      const bytes = crypto.getRandomValues(new Uint8Array(8))
+      const suffix = Array.from(bytes)
+        .map(byte => byte.toString(16).padStart(2, '0'))
+        .join('')
+      return `attachment-${suffix}`
+    }
+  }
+
+  return `attachment-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
 
 export function useFileUpload() {
   const attachments = ref<FileAttachment[]>([])
+  const uploadError = ref<string | null>(null)
 
   const isProcessing = computed(() =>
     attachments.value.some(a => a.status === 'processing')
@@ -64,19 +59,13 @@ export function useFileUpload() {
     return SUPPORTED_IMAGE_TYPES.includes(file.type)
   }
 
-  // Check if file is a supported document
-  function isDocument(file: File): boolean {
-    if (SUPPORTED_DOCUMENT_TYPES.includes(file.type)) {
-      return true
-    }
-    // Fallback to extension check for generic MIME types
-    const ext = '.' + file.name.split('.').pop()?.toLowerCase()
-    return DOCUMENT_EXTENSIONS.includes(ext)
+  // Any file type is allowed; images only affect preview rendering.
+  function isDocument(_file: File): boolean {
+    return true
   }
 
-  // Check if file is supported (image or document)
   function isSupported(file: File): boolean {
-    return isImage(file) || isDocument(file)
+    return file.size >= 0
   }
 
   // Get MIME type, with fallback for generic types
@@ -116,22 +105,21 @@ export function useFileUpload() {
   // Add files
   async function addFiles(files: FileList | File[]) {
     const fileArray = Array.from(files)
+    uploadError.value = null
 
     for (const file of fileArray) {
-      // Check if supported
       if (!isSupported(file)) {
-        console.warn(`Unsupported file type: ${file.name} (${file.type})`)
+        uploadError.value = `不支持上传 ${file.name}。`
         continue
       }
 
-      // Check file size based on type
-      const maxSize = isImage(file) ? MAX_IMAGE_SIZE : MAX_DOCUMENT_SIZE
-      if (file.size > maxSize) {
-        console.warn(`File too large: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB, max: ${maxSize / 1024 / 1024}MB)`)
+      if (file.size > MAX_FILE_SIZE) {
+        uploadError.value = `${file.name} 过大。聊天上传当前限制为 20MB。`
+        console.warn(`File too large: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB, max: ${MAX_FILE_SIZE / 1024 / 1024}MB)`)
         continue
       }
 
-      const id = crypto.randomUUID()
+      const id = createAttachmentId()
       const mime = getMimeType(file)
 
       const attachment: FileAttachment = {
@@ -168,6 +156,7 @@ export function useFileUpload() {
     } catch (err) {
       attachments.value[idx].status = 'error'
       attachments.value[idx].error = (err as Error).message
+      uploadError.value = `读取 ${attachment.filename} 失败，请重试。`
     }
   }
 
@@ -182,6 +171,11 @@ export function useFileUpload() {
   // Clear all files
   function clearAll() {
     attachments.value = []
+    uploadError.value = null
+  }
+
+  function clearError() {
+    uploadError.value = null
   }
 
   // Convert to message parts for API
@@ -198,11 +192,13 @@ export function useFileUpload() {
 
   return {
     attachments,
+    uploadError,
     isProcessing,
     hasReady,
     addFiles,
     removeFile,
     clearAll,
+    clearError,
     toMessageParts,
     isImage,
     isDocument,
