@@ -126,6 +126,9 @@ for (const target of targets) {
     console.log(`✓ Built ${buildName}`)
   } catch (error: any) {
     console.error(`Build failed for ${buildName}: ${error.message}`)
+    if (error?.stack) {
+      console.error(error.stack)
+    }
     process.exit(1)
   }
 }

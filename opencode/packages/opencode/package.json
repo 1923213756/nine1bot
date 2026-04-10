@@ -72,6 +72,7 @@
     "@ai-sdk/vercel": "1.0.31",
     "@ai-sdk/xai": "2.0.51",
     "@clack/prompts": "1.0.0-alpha.1",
+    "@fastify/busboy": "3.2.0",
     "@gitlab/gitlab-ai-provider": "3.3.1",
     "@hono/standard-validator": "0.1.5",
     "@hono/zod-validator": "catalog:",
