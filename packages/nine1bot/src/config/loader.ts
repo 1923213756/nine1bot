@@ -159,6 +159,15 @@ export function getAuthPath(): string {
 }
 
 /**
+ * 获取 MCP OAuth 认证文件路径
+ * - Windows: %LOCALAPPDATA%\nine1bot\mcp-auth.json
+ * - Unix: ~/.local/share/nine1bot/mcp-auth.json
+ */
+export function getMcpAuthPath(): string {
+  return join(getDataDir(), 'mcp-auth.json')
+}
+
+/**
  * 获取项目环境变量目录路径
  * 与 auth.json 同级目录，便于统一管理 Nine1Bot 私有数据
  * - Windows: %LOCALAPPDATA%\nine1bot\project-env
@@ -304,24 +313,12 @@ function validateDeprecatedBrowserConfig(config: Partial<Nine1BotConfig>): void 
  */
 export async function loadConfig(customConfigPath?: string): Promise<Nine1BotConfig> {
   let result: Partial<Nine1BotConfig> = {}
-
-  // 1. 加载全局配置
-  const globalConfigPath = getGlobalConfigPath()
-  if (await fileExists(globalConfigPath)) {
-    try {
-      const globalConfig = await loadConfigFile(globalConfigPath)
-      result = deepMerge(result, globalConfig)
-    } catch (error) {
-      console.warn(`Warning: Failed to load global config from ${globalConfigPath}:`, error)
-    }
-  }
-
-  // 2. 加载项目配置
   const projectConfigPath = customConfigPath || await findConfigPath()
+  let projectConfig: Partial<Nine1BotConfig> = {}
+
   if (projectConfigPath && await fileExists(projectConfigPath)) {
     try {
-      const projectConfig = await loadConfigFile(projectConfigPath)
-      result = deepMerge(result, projectConfig)
+      projectConfig = await loadConfigFile(projectConfigPath)
     } catch (error) {
       if (error instanceof SyntaxError) {
         throw new Error(`Invalid JSON in config file: ${projectConfigPath}`)
@@ -333,6 +330,24 @@ export async function loadConfig(customConfigPath?: string): Promise<Nine1BotCon
       }
       throw error
     }
+  }
+
+  const skipGlobalConfig = Boolean(projectConfig.isolation?.disableGlobalConfig)
+
+  // 1. 加载全局配置
+  const globalConfigPath = getGlobalConfigPath()
+  if (!skipGlobalConfig && await fileExists(globalConfigPath)) {
+    try {
+      const globalConfig = await loadConfigFile(globalConfigPath)
+      result = deepMerge(result, globalConfig)
+    } catch (error) {
+      console.warn(`Warning: Failed to load global config from ${globalConfigPath}:`, error)
+    }
+  }
+
+  // 2. 加载项目配置
+  if (projectConfigPath) {
+    result = deepMerge(result, projectConfig)
   }
 
   // 验证并返回最终配置

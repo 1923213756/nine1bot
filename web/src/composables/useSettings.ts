@@ -1,6 +1,7 @@
 import { ref, computed } from 'vue'
 import { providerApi, configApi, mcpApi, skillApi, authApi, nine1botConfigApi, customProviderApi, importAuthFromOpencode as importAuthFromOpencodeApi } from '../api/client'
 import type { Provider, McpServer, Skill, Config, McpConfig, CustomProvider, AuthImportResult } from '../api/client'
+import { authenticateMcpWithPopup } from '../utils/mcp-auth'
 
 const showSettings = ref(false)
 const activeTab = ref<'models' | 'mcp' | 'skills' | 'auth' | 'preferences' | 'profile'>('models')
@@ -197,6 +198,20 @@ export function useSettings() {
     }
   }
 
+  async function authenticateMcp(name: string) {
+    try {
+      await authenticateMcpWithPopup(name, {
+        onUpdate: (servers) => {
+          mcpServers.value = servers
+        },
+      })
+      await loadMcpServers()
+    } catch (e) {
+      console.error('Failed to authenticate MCP:', e)
+      throw e
+    }
+  }
+
   async function startOAuth(providerId: string) {
     try {
       const { url } = await providerApi.startOAuth(providerId)
@@ -367,10 +382,12 @@ export function useSettings() {
     selectModel,
     setDefaultModel,
     connectMcp,
+    authenticateMcp,
     disconnectMcp,
     addMcp,
     removeMcp,
     healthMcp,
+
     startOAuth,
     setApiKey,
     removeAuth,

@@ -20,6 +20,32 @@ async function writeConfig(config: unknown): Promise<string> {
   return configPath
 }
 
+describe('loadConfig remote MCP oauth support', () => {
+  it('preserves remote MCP oauth config', async () => {
+    const configPath = await writeConfig({
+      mcp: {
+        remote_docs: {
+          type: 'remote',
+          url: 'https://mcp.example.com/http',
+          oauth: {
+            clientId: 'client-id',
+            clientSecret: 'client-secret',
+            scope: 'read write',
+          },
+        },
+      },
+    })
+
+    const config = await loadConfig(configPath)
+    expect(config.mcp?.remote_docs).toEqual({
+      type: 'remote',
+      url: 'https://mcp.example.com/http',
+      oauth: {
+        clientId: 'client-id',
+        clientSecret: 'client-secret',
+        scope: 'read write',
+      },
+    })
 describe('loadConfig browser migration guards', () => {
   it('rejects deprecated mcp.browser config', async () => {
     const configPath = await writeConfig({

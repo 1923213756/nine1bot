@@ -31,6 +31,7 @@ const {
   selectModel,
   setDefaultModel,
   connectMcp,
+  authenticateMcp,
   disconnectMcp,
   addMcp,
   removeMcp,
@@ -174,6 +175,7 @@ function handleOverlayClick(e: MouseEvent) {
           :servers="mcpServers"
           :loading="loadingMcp"
           @connect="connectMcp"
+          @authenticate="authenticateMcp"
           @disconnect="disconnectMcp"
           @add="addMcp"
           @remove="removeMcp"
