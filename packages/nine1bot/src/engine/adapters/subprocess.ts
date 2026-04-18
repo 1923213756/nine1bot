@@ -33,6 +33,21 @@ function attachProcessLogging(proc: ChildProcess) {
   })
 }
 
+async function stopProcess(proc: ChildProcess, timeoutMs = 5000): Promise<void> {
+  if (proc.exitCode !== null) return
+
+  await new Promise<void>((resolve) => {
+    const timeout = setTimeout(() => {
+      if (proc.exitCode === null) proc.kill('SIGKILL')
+    }, timeoutMs)
+    proc.once('exit', () => {
+      clearTimeout(timeout)
+      resolve()
+    })
+    proc.kill('SIGTERM')
+  })
+}
+
 export class SubprocessOpencodeAdapter implements EngineAdapter {
   readonly name = 'opencode-subprocess'
 
@@ -59,7 +74,12 @@ export class SubprocessOpencodeAdapter implements EngineAdapter {
     attachProcessLogging(proc)
 
     const baseUrl = `http://${prepared.startSpec.host}:${prepared.startSpec.port}`
-    await waitForHealth(baseUrl, prepared.startSpec.healthEndpoint)
+    try {
+      await waitForHealth(baseUrl, prepared.startSpec.healthEndpoint)
+    } catch (error) {
+      await stopProcess(proc)
+      throw error
+    }
 
     let stopped = false
     return {
@@ -68,18 +88,7 @@ export class SubprocessOpencodeAdapter implements EngineAdapter {
       stop: async () => {
         if (stopped) return
         stopped = true
-        if (proc.exitCode !== null) return
-
-        await new Promise<void>((resolve) => {
-          const timeout = setTimeout(() => {
-            if (proc.exitCode === null) proc.kill('SIGKILL')
-          }, 5000)
-          proc.once('exit', () => {
-            clearTimeout(timeout)
-            resolve()
-          })
-          proc.kill('SIGTERM')
-        })
+        await stopProcess(proc)
       },
     }
   }

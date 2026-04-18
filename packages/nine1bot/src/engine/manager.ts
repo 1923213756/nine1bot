@@ -27,12 +27,7 @@ export class EngineManager {
 
   async stop(): Promise<void> {
     await this.runExclusive(async () => {
-      if (this.pendingWatcher) {
-        clearInterval(this.pendingWatcher)
-        this.pendingWatcher = undefined
-      }
-      this.pendingPrepared = undefined
-      this.pendingReason = undefined
+      this.clearPendingRebuild()
       if (this.currentHandle) {
         await this.currentHandle.stop()
         this.currentHandle = undefined
@@ -81,6 +76,7 @@ export class EngineManager {
       )
 
       if (!requiresRestart) {
+        this.clearPendingRebuild()
         this.currentPrepared = prepared
         return {
           state: 'applied',
@@ -115,15 +111,19 @@ export class EngineManager {
         if (await this.hasActiveSessions()) return
 
         const prepared = this.pendingPrepared
-        this.pendingPrepared = undefined
-        this.pendingReason = undefined
-        if (this.pendingWatcher) {
-          clearInterval(this.pendingWatcher)
-          this.pendingWatcher = undefined
-        }
+        this.clearPendingRebuild()
         await this.restart(prepared)
       })
     }, 1000)
+  }
+
+  private clearPendingRebuild() {
+    if (this.pendingWatcher) {
+      clearInterval(this.pendingWatcher)
+      this.pendingWatcher = undefined
+    }
+    this.pendingPrepared = undefined
+    this.pendingReason = undefined
   }
 
   private async restart(prepared: PreparedRuntime) {

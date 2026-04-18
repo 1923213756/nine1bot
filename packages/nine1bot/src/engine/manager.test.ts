@@ -145,4 +145,37 @@ describe('EngineManager', () => {
     expect(adapter.startCalls).toBe(2)
     expect(adapter.stopCalls).toBe(1)
   })
+
+  test('clears pending rebuild when a later change no longer requires restart', async () => {
+    const config = Nine1BotConfigSchema.parse({})
+    await manager.start(config)
+
+    activeSessions = true
+    adapter.nextRequiresRestart = true
+    adapter.nextFingerprint = 'stale-pending'
+
+    const pending = await manager.applyRuntimeChange('queue-restart')
+
+    expect(pending).toEqual({
+      state: 'pending-rebuild',
+      effectiveAfterCurrentSession: true,
+    })
+    expect(adapter.startCalls).toBe(1)
+
+    adapter.nextRequiresRestart = false
+    adapter.nextFingerprint = 'applied-without-restart'
+
+    const applied = await manager.applyRuntimeChange('apply-without-restart')
+
+    expect(applied).toEqual({
+      state: 'applied',
+      effectiveAfterCurrentSession: false,
+    })
+
+    activeSessions = false
+    await Bun.sleep(1200)
+
+    expect(adapter.startCalls).toBe(1)
+    expect(adapter.stopCalls).toBe(0)
+  })
 })

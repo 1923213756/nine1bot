@@ -37,11 +37,17 @@ export class InProcessOpencodeAdapter implements EngineAdapter {
 
   async start(prepared: PreparedRuntime): Promise<EngineHandle> {
     const restoreEnv = applyEnv(prepared.env)
-    const server = await OpencodeServer.listen({
-      port: prepared.startSpec.port,
-      hostname: prepared.startSpec.host,
-      cors: [],
-    })
+    let server: Awaited<ReturnType<typeof OpencodeServer.listen>>
+    try {
+      server = await OpencodeServer.listen({
+        port: prepared.startSpec.port,
+        hostname: prepared.startSpec.host,
+        cors: [],
+      })
+    } catch (error) {
+      restoreEnv()
+      throw error
+    }
     const baseUrl = server.url.toString().replace(/\/$/, '')
 
     let stopped = false
