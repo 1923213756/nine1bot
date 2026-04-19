@@ -43,6 +43,8 @@ export interface PreparedRuntime {
   env: Record<string, string>
   artifactPaths: EngineArtifactPaths
   startSpec: EngineStartSpec
+  runtimeConfig: Record<string, any>
+  runtimeConfigText: string
   restartFingerprint: string
 }
 

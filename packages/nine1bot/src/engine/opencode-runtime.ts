@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from 'fs/promises'
+import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join, resolve, dirname, basename } from 'path'
 import { createHash } from 'crypto'
@@ -8,9 +8,20 @@ import { getGlobalPreferencesPath } from '../preferences'
 import type { EngineArtifactPaths, EngineContext, EngineManifest, EngineMode, EngineStartSpec, PreparedRuntime } from './types'
 import { createServer } from 'net'
 
-const NINE1BOT_ONLY_FIELDS = ['server', 'auth', 'tunnel', 'isolation', 'skills', 'sandbox', 'browser', 'customProviders']
+const NINE1BOT_ONLY_FIELDS = ['server', 'auth', 'tunnel', 'isolation', 'skills', 'sandbox', 'browser', 'customProviders', 'feishu']
 const LEGACY_BROWSER_MCP_MARKER = 'browser-mcp-server'
 const LEGACY_BROWSER_BRIDGE_URL_MARKERS = ['127.0.0.1:18793', 'localhost:18793']
+// These keys are either reloaded in-place or synced by the MCP watcher. Everything
+// else stays restart-sensitive so cached opencode state does not drift silently.
+const HOT_RELOAD_RUNTIME_CONFIG_KEYS = new Set([
+  'default_agent',
+  'disabled_providers',
+  'enabled_providers',
+  'mcp',
+  'model',
+  'provider',
+  'small_model',
+])
 
 interface LegacyBrowserMcpEntry {
   name: string
@@ -266,6 +277,39 @@ function interpolateCommand(command: string[], values: Record<string, string>): 
   )
 }
 
+function buildRestartFingerprintInput(
+  runtimeConfig: Record<string, any>,
+  env: Record<string, string>,
+  context: EngineContext,
+  manifest: EngineManifest,
+  mode: EngineMode,
+) {
+  const restartSensitiveConfig = Object.fromEntries(
+    Object.entries(runtimeConfig).filter(([key]) => !HOT_RELOAD_RUNTIME_CONFIG_KEYS.has(key)),
+  )
+
+  return {
+    config: restartSensitiveConfig,
+    browserServiceUrl: context.browserServiceUrl ?? '',
+    flags: {
+      OPENCODE_DISABLE_GLOBAL_CONFIG: env.OPENCODE_DISABLE_GLOBAL_CONFIG ?? '',
+      OPENCODE_DISABLE_PROJECT_CONFIG: env.OPENCODE_DISABLE_PROJECT_CONFIG ?? '',
+      OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS ?? '',
+      OPENCODE_DISABLE_OPENCODE_SKILLS: env.OPENCODE_DISABLE_OPENCODE_SKILLS ?? '',
+      OPENCODE_DISABLE_OPENCODE_MCP: env.OPENCODE_DISABLE_OPENCODE_MCP ?? '',
+      OPENCODE_DISABLE_CLAUDE_CODE_MCP: env.OPENCODE_DISABLE_CLAUDE_CODE_MCP ?? '',
+      OPENCODE_DISABLE_OPENCODE_AUTH: env.OPENCODE_DISABLE_OPENCODE_AUTH ?? '',
+    },
+    mode,
+    runtimeLayoutVersion: manifest.runtimeLayoutVersion,
+  }
+}
+
+export async function cleanupPreparedRuntime(prepared?: Pick<PreparedRuntime, 'runtimeDir'>): Promise<void> {
+  if (!prepared?.runtimeDir) return
+  await rm(prepared.runtimeDir, { recursive: true, force: true }).catch(() => {})
+}
+
 export async function prepareOpencodeRuntime(
   config: Nine1BotConfig,
   context: EngineContext,
@@ -275,57 +319,60 @@ export async function prepareOpencodeRuntime(
   await mkdir(getGlobalConfigDir(), { recursive: true })
   await mkdir(getProjectEnvDir(), { recursive: true })
 
-  const runtimeDir = await createRuntimeDir()
-  const configPath = join(runtimeDir, 'opencode.config.json')
-  const configBuild = sanitizeOpencodeConfig(config)
-  const configContent = configBuild.config
-  warnAboutLegacyBrowserConfig(config.browser, configBuild.ignoredLegacyBrowserMcp)
-  await writeFile(configPath, JSON.stringify(configContent, null, 2), { mode: 0o600 })
+  let runtimeDir: string | undefined
+  try {
+    runtimeDir = await createRuntimeDir()
+    const configPath = join(runtimeDir, 'opencode.config.json')
+    const configBuild = sanitizeOpencodeConfig(config)
+    const runtimeConfig = configBuild.config
+    const runtimeConfigText = JSON.stringify(runtimeConfig, null, 2)
+    warnAboutLegacyBrowserConfig(config.browser, configBuild.ignoredLegacyBrowserMcp)
+    await writeFile(configPath, runtimeConfigText, { mode: 0o600 })
 
-  const artifactPaths: EngineArtifactPaths = {
-    configPath,
-    runtimeDir,
-  }
+    const artifactPaths: EngineArtifactPaths = {
+      configPath,
+      runtimeDir,
+    }
 
-  const env = buildEnv(config, context, artifactPaths)
-  const port = await findAvailablePort()
-  const host = '127.0.0.1'
-  const command =
-    mode === 'subprocess'
-      ? interpolateCommand([manifest.entry.command, ...manifest.entry.args], {
-          installDir: context.installDir,
-          port: String(port),
-          host,
-          runtimeDir,
-        })
-      : undefined
+    const env = buildEnv(config, context, artifactPaths)
+    const port = await findAvailablePort()
+    const host = '127.0.0.1'
+    const command =
+      mode === 'subprocess'
+        ? interpolateCommand([manifest.entry.command, ...manifest.entry.args], {
+            installDir: context.installDir,
+            port: String(port),
+            host,
+            runtimeDir,
+          })
+        : undefined
 
-  const startSpec: EngineStartSpec = {
-    type: mode,
-    host,
-    port,
-    healthEndpoint: manifest.healthEndpoint,
-    command,
-    cwd: context.installDir,
-  }
+    const startSpec: EngineStartSpec = {
+      type: mode,
+      host,
+      port,
+      healthEndpoint: manifest.healthEndpoint,
+      command,
+      cwd: context.installDir,
+    }
 
-  const restartFingerprint = createHash('sha256')
-    .update(
-      JSON.stringify({
-        config: configContent,
-        browserServiceUrl: context.browserServiceUrl ?? '',
-        flags: env,
-        runtimeLayoutVersion: manifest.runtimeLayoutVersion,
-        mode,
-      }),
-    )
-    .digest('hex')
+    const restartFingerprint = createHash('sha256')
+      .update(JSON.stringify(buildRestartFingerprintInput(runtimeConfig, env, context, manifest, mode)))
+      .digest('hex')
 
-  return {
-    runtimeDir,
-    env,
-    artifactPaths,
-    startSpec,
-    restartFingerprint,
+    return {
+      runtimeDir,
+      env,
+      artifactPaths,
+      startSpec,
+      runtimeConfig,
+      runtimeConfigText,
+      restartFingerprint,
+    }
+  } catch (error) {
+    if (runtimeDir) {
+      await cleanupPreparedRuntime({ runtimeDir })
+    }
+    throw error
   }
 }
