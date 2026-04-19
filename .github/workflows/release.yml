@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g., v1.0.0)'
-        required: false
+        description: 'Release tag for manual runs (e.g., v1.0.0)'
+        required: true
         type: string
 
 permissions:
@@ -110,8 +110,20 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.tag
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
 
     steps:
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -125,10 +137,10 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          name: Nine1Bot ${{ github.event.inputs.tag || github.ref_name }}
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Nine1Bot ${{ steps.meta.outputs.tag }}
           draft: false
-          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
+          prerelease: ${{ contains(steps.meta.outputs.tag, 'beta') || contains(steps.meta.outputs.tag, 'alpha') }}
           files: |
             artifacts/nine1bot-*/*
           body: |
@@ -147,11 +159,140 @@ jobs:
 
             ```bash
             # Linux/macOS
-            curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/nine1bot-linux-x64-${{ github.ref_name }}.tar.gz | tar -xz
+            curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/nine1bot-linux-x64-${{ steps.meta.outputs.tag }}.tar.gz | tar -xz
             cd nine1bot-linux-x64
             ./nine1bot
             ```
 
             ### What's Changed
 
-            See the [commits](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }}) for details.
+            See the [commits](https://github.com/${{ github.repository }}/commits/${{ steps.meta.outputs.tag }}) for details.
+
+  # Homebrew 跟随同一次发布流程更新，避免依赖 GITHUB_TOKEN 触发二次 workflow。
+  update-homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Calculate Homebrew SHA256
+        id: sha256
+        shell: bash
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          find_artifact() {
+            local pattern="$1"
+            local file
+            file=$(find artifacts -type f -name "$pattern" -print -quit)
+            if [ -z "$file" ]; then
+              echo "Missing artifact: $pattern" >&2
+              exit 1
+            fi
+            printf '%s' "$file"
+          }
+
+          DARWIN_ARM64=$(find_artifact "nine1bot-darwin-arm64-${TAG}.tar.gz")
+          LINUX_ARM64=$(find_artifact "nine1bot-linux-arm64-${TAG}.tar.gz")
+          LINUX_X64=$(find_artifact "nine1bot-linux-x64-${TAG}.tar.gz")
+
+          echo "darwin_arm64=$(sha256sum "$DARWIN_ARM64" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "linux_arm64=$(sha256sum "$LINUX_ARM64" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "linux_x64=$(sha256sum "$LINUX_X64" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: contrueCT/homebrew-nine1bot
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update Formula
+        shell: bash
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+          VERSION: ${{ needs.release.outputs.version }}
+          SHA_DARWIN_ARM64: ${{ steps.sha256.outputs.darwin_arm64 }}
+          SHA_LINUX_ARM64: ${{ steps.sha256.outputs.linux_arm64 }}
+          SHA_LINUX_X64: ${{ steps.sha256.outputs.linux_x64 }}
+        run: |
+          cat > homebrew-tap/Formula/nine1bot.rb <<EOF
+          class Nine1bot < Formula
+            desc "Nine1Bot - AI Assistant"
+            homepage "https://github.com/contrueCT/nine1bot"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/contrueCT/nine1bot/releases/download/${TAG}/nine1bot-darwin-arm64-${TAG}.tar.gz"
+                sha256 "${SHA_DARWIN_ARM64}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/contrueCT/nine1bot/releases/download/${TAG}/nine1bot-linux-arm64-${TAG}.tar.gz"
+                sha256 "${SHA_LINUX_ARM64}"
+              end
+              on_intel do
+                url "https://github.com/contrueCT/nine1bot/releases/download/${TAG}/nine1bot-linux-x64-${TAG}.tar.gz"
+                sha256 "${SHA_LINUX_X64}"
+              end
+            end
+
+            def install
+              build_dir = Dir["nine1bot-*"].first
+              raise "Expected unpacked nine1bot release directory" unless build_dir
+
+              bin.install "#{build_dir}/nine1bot"
+              libexec.install "#{build_dir}/bin", "#{build_dir}/skills", "#{build_dir}/web", "#{build_dir}/browser-extension", "#{build_dir}/scripts"
+              libexec.install "#{build_dir}/VERSION" if File.exist?("#{build_dir}/VERSION")
+            end
+
+            def caveats
+              <<~EOS
+                Nine1Bot 已安装成功！
+
+                启动服务:
+                  nine1bot start
+
+                配置向导:
+                  nine1bot setup
+
+                浏览器扩展:
+                  #{libexec}/browser-extension
+
+                更多帮助:
+                  nine1bot --help
+              EOS
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/nine1bot --version")
+            end
+          end
+          EOF
+
+      - name: Commit and push
+        shell: bash
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/nine1bot.rb
+          if git diff --cached --quiet; then
+            echo "Homebrew formula already up to date"
+            exit 0
+          fi
+          git commit -m "Update nine1bot to ${TAG}"
+          git push
