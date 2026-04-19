@@ -164,7 +164,6 @@ onMounted(() => {
 .panel-header {
   padding-bottom: var(--space-sm);
   border-bottom: 0.5px solid var(--border-subtle);
-  border-bottom: 0.5px solid var(--border-subtle);
 }
 
 .description {
@@ -190,7 +189,6 @@ onMounted(() => {
 .add-input {
   width: 100%;
   padding: var(--space-sm);
-  border: 0.5px solid var(--border-default);
   border: 0.5px solid var(--border-default);
   border-radius: var(--radius-sm);
   background: var(--bg-primary);
@@ -252,7 +250,6 @@ onMounted(() => {
   padding: var(--space-sm) var(--space-md);
   background: rgba(239, 68, 68, 0.1);
   border: 0.5px solid rgba(239, 68, 68, 0.3);
-  border: 0.5px solid rgba(239, 68, 68, 0.3);
   border-radius: var(--radius-sm);
   color: #ef4444;
   font-size: 13px;
@@ -289,7 +286,6 @@ onMounted(() => {
 .spinner {
   width: 16px;
   height: 16px;
-  border: 2px solid var(--border-default);
   border: 2px solid var(--border-default);
   border-top-color: var(--accent);
   border-radius: 50%;
@@ -338,13 +334,11 @@ onMounted(() => {
   padding: var(--space-md);
   background: var(--bg-secondary);
   border: 0.5px solid var(--border-subtle);
-  border: 0.5px solid var(--border-subtle);
   border-radius: var(--radius-md);
   transition: all var(--transition-fast);
 }
 
 .preference-item:hover {
-  border-color: var(--border-default);
   border-color: var(--border-default);
 }
 
@@ -372,7 +366,6 @@ onMounted(() => {
 .edit-input {
   flex: 1;
   padding: var(--space-sm);
-  border: 0.5px solid var(--accent);
   border: 0.5px solid var(--accent);
   border-radius: var(--radius-sm);
   background: var(--bg-primary);

@@ -366,7 +366,6 @@ function scrollToBottom() {
   align-items: flex-start;
   gap: var(--space-sm);
   color: var(--error);
-  color: var(--error);
 }
 
 .error-content svg {

@@ -587,7 +587,7 @@ function contextMenuDelete() {
   border-color: var(--border-subtle);
 }
 
-.nav-item.active {
+.session-item.active {
   background: var(--accent-subtle);
   border-color: rgba(0, 0, 0, 0.05);
 }
@@ -712,7 +712,6 @@ function contextMenuDelete() {
   gap: 6px;
   padding: 6px 12px;
   border: none;
-  background: transparent;
   background: transparent;
   color: var(--text-muted);
   font-family: var(--font-sans);
@@ -889,7 +888,6 @@ function contextMenuDelete() {
   justify-content: space-between;
   padding: var(--space-md);
   border-bottom: 0.5px solid var(--border-subtle);
-  border-bottom: 0.5px solid var(--border-subtle);
   font-weight: 600;
 }
 
@@ -909,7 +907,6 @@ function contextMenuDelete() {
 
 .dialog-header .action-btn:hover {
   background: var(--bg-tertiary);
-  background: var(--bg-tertiary);
   color: var(--text-primary);
 }
 
@@ -927,7 +924,6 @@ function contextMenuDelete() {
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   font-size: 14px;
-  font-weight: var(--font-weight-normal);
   font-weight: var(--font-weight-normal);
 }
 
@@ -952,7 +948,6 @@ function contextMenuDelete() {
   gap: var(--space-sm);
   padding: var(--space-md);
   border-top: 0.5px solid var(--border-subtle);
-  border-top: 0.5px solid var(--border-subtle);
 }
 
 .dialog-footer .btn-sm {
@@ -965,7 +960,6 @@ function contextMenuDelete() {
 }
 
 .dialog-footer .btn-danger {
-  background: var(--error);
   background: var(--error);
   color: white;
   border: none;

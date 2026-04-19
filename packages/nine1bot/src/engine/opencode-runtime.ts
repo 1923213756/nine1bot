@@ -3,7 +3,7 @@ import { tmpdir } from 'os'
 import { join, resolve, dirname, basename } from 'path'
 import { createHash } from 'crypto'
 import type { Nine1BotConfig, CustomProvider } from '../config/schema'
-import { getAuthPath, getGlobalConfigDir, getGlobalSkillsDir, getInstallDir, getProjectEnvDir } from '../config/loader'
+import { getAuthPath, getGlobalConfigDir, getGlobalSkillsDir, getInstallDir, getMcpAuthPath, getProjectEnvDir } from '../config/loader'
 import { getGlobalPreferencesPath } from '../preferences'
 import type { EngineArtifactPaths, EngineContext, EngineManifest, EngineMode, EngineStartSpec, PreparedRuntime } from './types'
 import { createServer } from 'net'
@@ -210,6 +210,7 @@ function buildEnv(config: Nine1BotConfig, context: EngineContext, artifactPaths:
     OPENCODE_CONFIG: artifactPaths.configPath,
     NINE1BOT_CONFIG_PATH: context.configPath,
     NINE1BOT_AUTH_PATH: getAuthPath(),
+    NINE1BOT_MCP_AUTH_PATH: getMcpAuthPath(),
     NINE1BOT_PROJECT_ENV_DIR: getProjectEnvDir(),
     NINE1BOT_PREFERENCES_MODULE: 'nine1bot',
     NINE1BOT_PREFERENCES_PATH: getGlobalPreferencesPath(),
