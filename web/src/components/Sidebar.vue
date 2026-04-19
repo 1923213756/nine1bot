@@ -874,8 +874,6 @@ function contextMenuDelete() {
 .dialog {
   background: var(--bg-elevated);
   border: 0.5px solid var(--border-default);
-  background: var(--bg-elevated);
-  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
   width: 320px;
   max-width: 90vw;
@@ -917,8 +915,6 @@ function contextMenuDelete() {
 .dialog-input {
   width: 100%;
   padding: var(--space-sm) var(--space-md);
-  background: var(--bg-primary);
-  border: 0.5px solid var(--border-default);
   background: var(--bg-primary);
   border: 0.5px solid var(--border-default);
   border-radius: var(--radius-sm);

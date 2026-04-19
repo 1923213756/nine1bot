@@ -101,6 +101,7 @@ export function createShellApp(options: ShellAppOptions) {
   }))
   app.route('/preferences', createPreferencesRoutes(options.projectDir))
   app.route('/config', createShellConfigRoutes({
+    browserService: options.browserService,
     configPath: options.configPath,
     engineManager: options.engineManager,
   }))

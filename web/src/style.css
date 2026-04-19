@@ -103,14 +103,6 @@
   --error-subtle: rgba(196, 69, 54, 0.1);
   --info: #4A76A8;
   --info-subtle: rgba(74, 118, 168, 0.1);
-  --success: #2D8A5F;
-  --success-subtle: rgba(45, 138, 95, 0.1);
-  --warning: #C68A28;
-  --warning-subtle: rgba(198, 138, 40, 0.1);
-  --error: #C44536;
-  --error-subtle: rgba(196, 69, 54, 0.1);
-  --info: #4A76A8;
-  --info-subtle: rgba(74, 118, 168, 0.1);
 
   /* Shadows */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
@@ -172,19 +164,8 @@
   --error-subtle: rgba(239, 68, 68, 0.12);
   --info: #3b82f6;
   --info-subtle: rgba(59, 130, 246, 0.12);
-  --success: #10b981;
-  --success-subtle: rgba(16, 185, 129, 0.12);
-  --warning: #f59e0b;
-  --warning-subtle: rgba(245, 158, 11, 0.12);
-  --error: #ef4444;
-  --error-subtle: rgba(239, 68, 68, 0.12);
-  --info: #3b82f6;
-  --info-subtle: rgba(59, 130, 246, 0.12);
 
   /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
-  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.4);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
   --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.4);
@@ -296,9 +277,6 @@ a:hover {
   font-size: 1.125rem;
   font-weight: 600;
   color: var(--text-primary);
-  font-size: 1.125rem;
-  font-weight: 600;
-  color: var(--text-primary);
 }
 
 .sidebar-content {
@@ -363,8 +341,6 @@ a:hover {
 .session-item {
   padding: 6px var(--space-md);
   border-radius: var(--radius-sm);
-  padding: 6px var(--space-md);
-  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: background var(--transition-fast);
   display: flex;
@@ -390,8 +366,6 @@ a:hover {
 }
 
 .session-item.active .session-item-title {
-  color: var(--accent);
-  font-weight: 500;
   color: var(--accent);
   font-weight: 500;
 }
@@ -459,8 +433,6 @@ a:hover {
 .message {
   max-width: 720px;
   animation: messageIn 0.3s var(--ease-smooth);
-  max-width: 720px;
-  animation: messageIn 0.3s var(--ease-smooth);
 }
 
 @keyframes messageIn {
@@ -497,8 +469,6 @@ a:hover {
 
 /* === Tool Call === */
 .tool-call {
-  background: var(--bg-secondary);
-  border: 0.5px solid var(--border-default);
   background: var(--bg-secondary);
   border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
@@ -574,8 +544,6 @@ a:hover {
 
 .tool-call-body {
   padding: var(--space-md);
-  border-top: 0.5px solid var(--border-subtle);
-  background: var(--bg-primary);
   border-top: 0.5px solid var(--border-subtle);
   background: var(--bg-primary);
 }
@@ -680,21 +648,12 @@ a:hover {
     background-color var(--transition-fast),
     transform var(--transition-fast),
     opacity var(--transition-fast);
-  transition:
-    color var(--transition-fast),
-    background-color var(--transition-fast),
-    transform var(--transition-fast),
-    opacity var(--transition-fast);
   white-space: nowrap;
 }
 
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-.btn:active:not(:disabled) {
-  transform: scale(0.98);
 }
 
 .btn:active:not(:disabled) {
@@ -747,12 +706,6 @@ a:hover {
 .btn-icon.lg {
   width: 44px;
   height: 44px;
-}
-
-.btn-sm {
-  padding: var(--space-xs) var(--space-sm);
-  font-size: 0.8125rem;
-  height: 28px;
 }
 
 .btn-sm {
@@ -842,8 +795,6 @@ a:hover {
   inset: 0;
   background: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(2px);
-  background: rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -857,8 +808,6 @@ a:hover {
 }
 
 .modal {
-  background: var(--bg-elevated);
-  border: 0.5px solid var(--border-default);
   background: var(--bg-elevated);
   border: 0.5px solid var(--border-default);
   border-radius: var(--radius-xl);
@@ -988,24 +937,16 @@ a:hover {
   color: var(--error);
 }
 
-.error-text {
-  color: var(--error);
-}
-
 /* === Input === */
 .input {
   width: 100%;
   padding: var(--space-sm) var(--space-md);
   background: var(--bg-primary);
   border: 0.5px solid var(--border-default);
-  background: var(--bg-primary);
-  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
   color: var(--text-primary);
   font-family: var(--font-sans);
   font-size: 0.875rem;
-  font-weight: var(--font-weight-normal);
-  transition: border-color var(--transition-fast);
   font-weight: var(--font-weight-normal);
   transition: border-color var(--transition-fast);
 }
@@ -1035,8 +976,6 @@ a:hover {
 .card {
   background: var(--bg-primary);
   border: 0.5px solid var(--border-default);
-  background: var(--bg-primary);
-  border: 0.5px solid var(--border-default);
   border-radius: var(--radius-lg);
   overflow: hidden;
 }
@@ -1052,8 +991,6 @@ a:hover {
 
 .card-footer {
   padding: var(--space-md) var(--space-lg);
-  border-top: 0.5px solid var(--border-subtle);
-  background: var(--bg-secondary);
   border-top: 0.5px solid var(--border-subtle);
   background: var(--bg-secondary);
 }
@@ -1148,8 +1085,6 @@ a:hover {
   margin: 0.75em 0;
 }
 
-.markdown-content p:first-child { margin-top: 0; }
-.markdown-content p:last-child { margin-bottom: 0; }
 .markdown-content p:first-child { margin-top: 0; }
 .markdown-content p:last-child { margin-bottom: 0; }
 
@@ -1377,8 +1312,6 @@ a:hover {
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 19px;
-  height: 19px;
   width: 19px;
   height: 19px;
   background: white;

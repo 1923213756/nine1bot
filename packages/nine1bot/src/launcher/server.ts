@@ -3,7 +3,7 @@ import type { ServerConfig, AuthConfig, Nine1BotConfig } from '../config/schema'
 import { getInstallDir } from '../config/loader'
 import { ShellGlobalEvents } from '../server/events'
 import { createShellApp } from '../server/app'
-import { startBrowserService } from '../browser/service'
+import { startBrowserService, type BrowserServiceInstance } from '../browser/service'
 import type { EngineAdapter } from '../engine/types'
 import { EngineManager } from '../engine/manager'
 
@@ -35,7 +35,7 @@ export async function startServer(options: StartServerOptions): Promise<ServerIn
   const { server, auth, fullConfig } = options
   const installDir = getInstallDir()
   const projectDir = process.env.NINE1BOT_PROJECT_DIR || process.cwd()
-  let browserService
+  let browserService: BrowserServiceInstance | undefined
   try {
     browserService = await startBrowserService(fullConfig.browser)
   } catch (error) {

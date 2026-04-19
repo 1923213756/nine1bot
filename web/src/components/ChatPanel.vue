@@ -352,8 +352,6 @@ function scrollToBottom() {
   padding: var(--space-md);
   background: var(--error-subtle);
   border: 0.5px solid var(--error);
-  background: var(--error-subtle);
-  border: 0.5px solid var(--error);
   border-radius: var(--radius-md);
   display: flex;
   flex-direction: column;

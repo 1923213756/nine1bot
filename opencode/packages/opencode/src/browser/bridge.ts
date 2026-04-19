@@ -1,14 +1,21 @@
-import type { BridgeServer } from '../../../../packages/browser-mcp-server/src/bridge/server'
 import { BrowserServiceClient } from './service-client'
 
-let instance: BridgeServer | null = null
+type InProcessBridgeServer = any
+
+let instance: InProcessBridgeServer | null = null
 let serviceClient: BrowserServiceClient | null = null
 
-export function setBridgeServer(bridge: BridgeServer): void {
+export function setBridgeServer(bridge: InProcessBridgeServer): void {
   instance = bridge
+  serviceClient = null
 }
 
-export function getBridgeServer(): BridgeServer | BrowserServiceClient | null {
+export function clearBridgeServer(): void {
+  instance = null
+  serviceClient = null
+}
+
+export function getBridgeServer(): InProcessBridgeServer | BrowserServiceClient | null {
   if (instance) {
     return instance
   }

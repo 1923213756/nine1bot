@@ -346,8 +346,6 @@ function handleOverlayClick(e: MouseEvent) {
   color: var(--text-secondary);
   font-weight: var(--font-weight-normal);
   transition: all var(--transition-fast);
-  font-weight: var(--font-weight-normal);
-  transition: all var(--transition-fast);
 }
 
 .settings-tabs .tab:hover {

@@ -739,9 +739,6 @@ function formatSize(bytes: number): string {
   background: var(--accent-subtle);
   border: 0.5px solid var(--accent);
   border-radius: var(--radius-md);
-  background: var(--accent-subtle);
-  border: 0.5px solid var(--accent);
-  border-radius: var(--radius-md);
   font-size: 12px;
   color: var(--accent);
 }

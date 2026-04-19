@@ -385,11 +385,14 @@ function cleanupExtension(): void {
 
 // ==================== Hono Routes ====================
 
-export function createRelayRoutes(): Hono {
+export function createRelayRoutes(isEnabled: () => boolean = () => true): Hono {
   return new Hono()
     .get(
       '/extension',
       async (c, next) => {
+        if (!isEnabled()) {
+          return c.text('Browser control not enabled', 503)
+        }
         if (extensionWs && extensionWs.readyState === 1) {
           return c.text('Extension already connected', 409)
         }
@@ -417,6 +420,9 @@ export function createRelayRoutes(): Hono {
     .get(
       '/cdp',
       async (c, next) => {
+        if (!isEnabled()) {
+          return c.text('Browser control not enabled', 503)
+        }
         if (!extensionWs || extensionWs.readyState !== 1) {
           return c.text('Extension not connected', 503)
         }

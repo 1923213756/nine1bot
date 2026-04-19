@@ -869,9 +869,6 @@ function handlePromptSelect(prompt: string) {
   background: var(--bg-elevated);
   border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
-  background: var(--bg-elevated);
-  border: 0.5px solid var(--border-default);
-  border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   animation: slideIn 0.3s var(--ease-smooth);
 }
@@ -879,13 +876,9 @@ function handlePromptSelect(prompt: string) {
 .notification-toast.success {
   border-color: var(--success);
   background: var(--bg-elevated);
-  border-color: var(--success);
-  background: var(--bg-elevated);
 }
 
 .notification-toast.info {
-  border-color: var(--accent);
-  background: var(--bg-elevated);
   border-color: var(--accent);
   background: var(--bg-elevated);
 }
@@ -930,8 +923,6 @@ function handlePromptSelect(prompt: string) {
 .notification-message {
   font-size: 0.75rem;
   color: var(--text-secondary);
-  font-size: 0.75rem;
-  color: var(--text-secondary);
 }
 
 .notification-close {
@@ -950,8 +941,6 @@ function handlePromptSelect(prompt: string) {
 }
 
 .notification-close:hover {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
   background: var(--bg-tertiary);
   color: var(--text-primary);
 }
