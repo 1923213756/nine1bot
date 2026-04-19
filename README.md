@@ -12,9 +12,7 @@ Supports programming, file management, information retrieval, content creation, 
 
 ## Screenshots
 
-<!-- Add your screenshots here, for example: -->
-<!-- ![Chat Interface](./docs/images/chat.png) -->
-<!-- ![Settings](./docs/images/settings.png) -->
+![Nine1Bot Web UI](./docs/images/feature-web-ui.jpg)
 
 ## Features
 

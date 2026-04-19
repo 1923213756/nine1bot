@@ -12,9 +12,7 @@
 
 ## 截图
 
-<!-- 在这里添加截图，例如： -->
-<!-- ![聊天界面](./docs/images/chat.png) -->
-<!-- ![设置页面](./docs/images/settings.png) -->
+![Nine1Bot Web 界面](./docs/images/feature-web-ui.jpg)
 
 ## 功能特点
 
