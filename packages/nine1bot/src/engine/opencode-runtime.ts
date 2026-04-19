@@ -9,6 +9,19 @@ import type { EngineArtifactPaths, EngineContext, EngineManifest, EngineMode, En
 import { createServer } from 'net'
 
 const NINE1BOT_ONLY_FIELDS = ['server', 'auth', 'tunnel', 'isolation', 'skills', 'sandbox', 'browser', 'customProviders']
+const LEGACY_BROWSER_MCP_MARKER = 'browser-mcp-server'
+const LEGACY_BROWSER_BRIDGE_URL_MARKERS = ['127.0.0.1:18793', 'localhost:18793']
+
+interface LegacyBrowserMcpEntry {
+  name: string
+  command: string[]
+  bridgeUrl?: string
+}
+
+interface OpencodeConfigBuildResult {
+  config: Record<string, any>
+  ignoredLegacyBrowserMcp: LegacyBrowserMcpEntry[]
+}
 
 function isReleaseMode(): boolean {
   const dirName = basename(dirname(process.execPath))
@@ -57,9 +70,62 @@ export function mapCustomProvidersToOpencode(customProviders: Nine1BotConfig['cu
   return mapped
 }
 
-function sanitizeOpencodeConfig(config: Nine1BotConfig): Record<string, any> {
+function getCommandParts(entry: unknown): string[] {
+  const command = (entry as { command?: unknown })?.command
+  if (!Array.isArray(command)) return []
+  return command.filter((part): part is string => typeof part === 'string')
+}
+
+function isLegacyBrowserMcpEntry(name: string, entry: unknown): LegacyBrowserMcpEntry | null {
+  if (!entry || typeof entry !== 'object') return null
+  if ((entry as { type?: unknown }).type !== 'local') return null
+
+  const command = getCommandParts(entry)
+  if (!command.some((part) => part.includes(LEGACY_BROWSER_MCP_MARKER))) {
+    return null
+  }
+
+  const bridgeUrl = typeof (entry as { environment?: Record<string, unknown> }).environment?.BRIDGE_URL === 'string'
+    ? (entry as { environment?: Record<string, string> }).environment?.BRIDGE_URL
+    : undefined
+
+  return { name, command, bridgeUrl }
+}
+
+function isDeprecatedBrowserBridgeUrl(url: string): boolean {
+  return LEGACY_BROWSER_BRIDGE_URL_MARKERS.some((marker) => url.includes(marker))
+}
+
+function warnAboutLegacyBrowserConfig(
+  browserConfig: Nine1BotConfig['browser'] | undefined,
+  ignoredLegacyBrowserMcp: LegacyBrowserMcpEntry[],
+): void {
+  if (browserConfig?.bridgePort !== undefined) {
+    console.warn(
+      '[Nine1Bot] browser.bridgePort is deprecated and ignored. Browser control is now built in at /browser on the main server.',
+    )
+  }
+
+  for (const entry of ignoredLegacyBrowserMcp) {
+    console.warn(
+      `[Nine1Bot] Ignoring legacy browser MCP "${entry.name}" because browser control is built in. Use the built-in browser_* tools instead of browser_browser_*.`,
+    )
+    if (entry.bridgeUrl && isDeprecatedBrowserBridgeUrl(entry.bridgeUrl)) {
+      console.warn(
+        `[Nine1Bot] Legacy browser MCP "${entry.name}" uses BRIDGE_URL=${entry.bridgeUrl}, which is deprecated. Browser control is now available through the built-in browser_* tools.`,
+      )
+    }
+  }
+
+  if (ignoredLegacyBrowserMcp.length > 0 && browserConfig?.enabled !== true) {
+    console.warn('[Nine1Bot] To keep browser control enabled, set "browser.enabled": true in your Nine1Bot config.')
+  }
+}
+
+function sanitizeOpencodeConfig(config: Nine1BotConfig): OpencodeConfigBuildResult {
   const opencodeConfig: Record<string, any> = {}
   const customProviders = mapCustomProvidersToOpencode(config.customProviders || {})
+  const ignoredLegacyBrowserMcp: LegacyBrowserMcpEntry[] = []
 
   for (const [key, value] of Object.entries(config)) {
     if (NINE1BOT_ONLY_FIELDS.includes(key)) continue
@@ -74,8 +140,16 @@ function sanitizeOpencodeConfig(config: Nine1BotConfig): Record<string, any> {
 
     if (key === 'mcp' && typeof value === 'object' && value !== null) {
       const { inheritOpencode, inheritClaudeCode, ...mcpServers } = value as Record<string, unknown>
-      if (Object.keys(mcpServers).length > 0) {
-        opencodeConfig[key] = mcpServers
+      const filteredMcpServers = Object.fromEntries(
+        Object.entries(mcpServers).filter(([name, entry]) => {
+          const legacyEntry = isLegacyBrowserMcpEntry(name, entry)
+          if (!legacyEntry) return true
+          ignoredLegacyBrowserMcp.push(legacyEntry)
+          return false
+        }),
+      )
+      if (Object.keys(filteredMcpServers).length > 0) {
+        opencodeConfig[key] = filteredMcpServers
       }
       continue
     }
@@ -102,7 +176,10 @@ function sanitizeOpencodeConfig(config: Nine1BotConfig): Record<string, any> {
     opencodeConfig.provider = customProviders
   }
 
-  return opencodeConfig
+  return {
+    config: opencodeConfig,
+    ignoredLegacyBrowserMcp,
+  }
 }
 
 async function createRuntimeDir(): Promise<string> {
@@ -199,7 +276,9 @@ export async function prepareOpencodeRuntime(
 
   const runtimeDir = await createRuntimeDir()
   const configPath = join(runtimeDir, 'opencode.config.json')
-  const configContent = sanitizeOpencodeConfig(config)
+  const configBuild = sanitizeOpencodeConfig(config)
+  const configContent = configBuild.config
+  warnAboutLegacyBrowserConfig(config.browser, configBuild.ignoredLegacyBrowserMcp)
   await writeFile(configPath, JSON.stringify(configContent, null, 2), { mode: 0o600 })
 
   const artifactPaths: EngineArtifactPaths = {
