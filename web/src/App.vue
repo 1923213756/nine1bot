@@ -869,16 +869,24 @@ function handlePromptSelect(prompt: string) {
   background: var(--bg-elevated);
   border: 0.5px solid var(--border-default);
   border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  border: 0.5px solid var(--border-default);
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
+  animation: slideIn 0.3s var(--ease-smooth);
   animation: slideIn 0.3s var(--ease-smooth);
 }
 
 .notification-toast.success {
   border-color: var(--success);
   background: var(--bg-elevated);
+  border-color: var(--success);
+  background: var(--bg-elevated);
 }
 
 .notification-toast.info {
+  border-color: var(--accent);
+  background: var(--bg-elevated);
   border-color: var(--accent);
   background: var(--bg-elevated);
 }
@@ -896,10 +904,12 @@ function handlePromptSelect(prompt: string) {
 .notification-toast.success .notification-icon {
   background: rgba(34, 197, 94, 0.2);
   color: var(--success);
+  color: var(--success);
 }
 
 .notification-toast.info .notification-icon {
   background: rgba(99, 102, 241, 0.2);
+  color: var(--accent);
   color: var(--accent);
 }
 
@@ -913,7 +923,9 @@ function handlePromptSelect(prompt: string) {
 
 .notification-title {
   font-size: 0.875rem;
+  font-size: 0.875rem;
   font-weight: 500;
+  color: var(--text-primary);
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -921,6 +933,8 @@ function handlePromptSelect(prompt: string) {
 }
 
 .notification-message {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
   font-size: 0.75rem;
   color: var(--text-secondary);
 }
@@ -934,6 +948,7 @@ function handlePromptSelect(prompt: string) {
   border: none;
   background: transparent;
   color: var(--text-muted);
+  color: var(--text-muted);
   cursor: pointer;
   border-radius: var(--radius-sm);
   flex-shrink: 0;
@@ -941,6 +956,8 @@ function handlePromptSelect(prompt: string) {
 }
 
 .notification-close:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
   background: var(--bg-tertiary);
   color: var(--text-primary);
 }

@@ -13,7 +13,6 @@
  */
 
 import { Hono } from 'hono'
-import { Socket } from 'node:net'
 import {
   listCdpTargets,
   captureScreenshot,
@@ -32,8 +31,6 @@ import type {
   ExtensionToolResult,
   BrowserTarget,
   BrowserStatus,
-  BrowserRuntimeConflict,
-  BrowserRuntimeStatus,
   SnapshotResult,
   ClickOptions,
 } from '../core/types'
@@ -47,45 +44,6 @@ export interface BridgeServerOptions {
   cdpPort?: number
   autoLaunch?: boolean
   headless?: boolean
-  serverOrigin?: string
-  instanceId?: string
-}
-
-const DEFAULT_SERVER_ORIGIN = 'http://127.0.0.1:4096'
-const LEGACY_BROWSER_PORTS = [18791, 18793]
-const EXTENSION_PROTOCOL_VERSION = '2026-03-15'
-
-function normalizeServerOrigin(serverOrigin: string): string {
-  try {
-    const parsed = new URL(serverOrigin)
-    return `${parsed.protocol}//${parsed.host}`
-  } catch {
-    return DEFAULT_SERVER_ORIGIN
-  }
-}
-
-function generateInstanceId(): string {
-  return `browser_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
-}
-
-async function isLocalPortListening(host: string, port: number): Promise<boolean> {
-  return await new Promise((resolve) => {
-    const socket = new Socket()
-    let settled = false
-
-    const finish = (value: boolean) => {
-      if (settled) return
-      settled = true
-      socket.destroy()
-      resolve(value)
-    }
-
-    socket.setTimeout(250)
-    socket.once('connect', () => finish(true))
-    socket.once('timeout', () => finish(false))
-    socket.once('error', () => finish(false))
-    socket.connect(port, host)
-  })
 }
 
 /**
@@ -103,8 +61,6 @@ export class BridgeServer {
       cdpPort: options.cdpPort ?? 9222,
       autoLaunch: options.autoLaunch ?? true,
       headless: options.headless ?? false,
-      serverOrigin: normalizeServerOrigin(options.serverOrigin ?? DEFAULT_SERVER_ORIGIN),
-      instanceId: options.instanceId ?? generateInstanceId(),
     }
   }
 
@@ -215,79 +171,7 @@ export class BridgeServer {
       botStatus = { running: false, tabs: [] }
     }
 
-    return {
-      user: userStatus,
-      bot: botStatus,
-      runtime: await this.getRuntimeStatus(),
-    }
-  }
-
-  private async getRuntimeStatus(): Promise<BrowserRuntimeStatus> {
-    const hello = this.relay?.getHello() ?? null
-    const helloAt = this.relay?.getHelloAt() ?? null
-    const conflicts = await this.detectLegacyPortConflicts()
-    const issues: BrowserRuntimeStatus['issues'] = []
-
-    if (hello?.serverOrigin && normalizeServerOrigin(hello.serverOrigin) !== this.options.serverOrigin) {
-      issues.push({
-        code: 'extension_server_origin_mismatch',
-        severity: 'error',
-        message: `Extension is paired with ${hello.serverOrigin}, but this server expects ${this.options.serverOrigin}.`,
-      })
-    }
-
-    if (hello?.pairedInstanceId && hello.pairedInstanceId !== this.options.instanceId) {
-      issues.push({
-        code: 'extension_instance_mismatch',
-        severity: 'error',
-        message: `Extension is paired with instance ${hello.pairedInstanceId}, but this server instance is ${this.options.instanceId}.`,
-      })
-    }
-
-    for (const conflict of conflicts) {
-      issues.push({
-        code: `legacy_port_${conflict.port}`,
-        severity: 'warning',
-        message: conflict.message,
-      })
-    }
-
-    return {
-      mode: 'embedded',
-      serverOrigin: this.options.serverOrigin,
-      instanceId: this.options.instanceId,
-      extension: {
-        connected: this.isExtensionConnected,
-        helloAt,
-        version: hello?.version ?? null,
-        protocolVersion: hello?.protocolVersion ?? null,
-        serverOrigin: hello?.serverOrigin ?? null,
-        pairedInstanceId: hello?.pairedInstanceId ?? null,
-      },
-      conflicts,
-      issues,
-    }
-  }
-
-  private async detectLegacyPortConflicts(): Promise<BrowserRuntimeConflict[]> {
-    let currentPort: number | null = null
-    try {
-      currentPort = Number(new URL(this.options.serverOrigin).port || 80)
-    } catch {
-      currentPort = null
-    }
-
-    const conflicts: BrowserRuntimeConflict[] = []
-    for (const port of LEGACY_BROWSER_PORTS) {
-      if (currentPort === port) continue
-      if (!(await isLocalPortListening('127.0.0.1', port))) continue
-      conflicts.push({
-        host: '127.0.0.1',
-        port,
-        message: `Detected a legacy browser bridge listener on 127.0.0.1:${port}. Browser control now uses ${this.options.serverOrigin}/browser/* only.`,
-      })
-    }
-    return conflicts
+    return { user: userStatus, bot: botStatus }
   }
 
   /**
@@ -843,27 +727,8 @@ export class BridgeServer {
         'Runtime.evaluate',
         { expression, returnByValue: true },
         tabId
-      ) as unknown
-
-      if (result && typeof result === 'object') {
-        const record = result as {
-          exceptionDetails?: { text?: string }
-          result?: { value?: unknown }
-          value?: unknown
-        }
-
-        if (record.exceptionDetails?.text) {
-          throw new Error(record.exceptionDetails.text)
-        }
-        if (record.result && typeof record.result === 'object' && 'value' in record.result) {
-          return record.result.value
-        }
-        if ('value' in record) {
-          return record.value
-        }
-      }
-
-      return result
+      ) as { result?: { value?: unknown } }
+      return result?.result?.value
     }
 
     const wsUrl = await this.getTargetWsUrl(tabId)
@@ -1042,15 +907,6 @@ export class BridgeServer {
   private createHttpApp(): Hono {
     const app = new Hono()
 
-    app.get('/bootstrap', (c) => {
-      return c.json({
-        mode: 'embedded',
-        serverOrigin: this.options.serverOrigin,
-        instanceId: this.options.instanceId,
-        extensionProtocolVersion: EXTENSION_PROTOCOL_VERSION,
-      })
-    })
-
     app.get('/', async (c) => {
       try {
         const status = await this.getStatus()
@@ -1064,15 +920,6 @@ export class BridgeServer {
       try {
         const status = await this.getStatus()
         return c.json({ ok: true, ...status })
-      } catch (error) {
-        return c.json({ ok: false, error: String(error) }, 500)
-      }
-    })
-
-    app.get('/diagnostics', async (c) => {
-      try {
-        const runtime = await this.getRuntimeStatus()
-        return c.json({ ok: true, runtime })
       } catch (error) {
         return c.json({ ok: false, error: String(error) }, 500)
       }
@@ -1104,18 +951,14 @@ export class BridgeServer {
     app.get('/extension/health', (c) => {
       const health = this.relay?.getHealth() ?? null
       const helloAt = this.relay?.getHelloAt() ?? null
-      const hello = this.relay?.getHello() ?? null
       const capabilities = this.relay?.getCapabilities() ?? {}
       const agentStates = this.relay?.getAgentStates() ?? []
       return c.json({
         connected: this.isExtensionConnected,
         helloAt,
-        hello,
         health,
         capabilities,
         agentStates,
-        instanceId: this.options.instanceId,
-        serverOrigin: this.options.serverOrigin,
       })
     })
 

@@ -1,0 +1,83 @@
+{
+  "$schema": "https://nine1bot.com/config.schema.json",
+  "server": {
+    "port": 4096,
+    "hostname": "127.0.0.1",
+    "openBrowser": true
+  },
+  "auth": {
+    "enabled": false,
+    "password": ""
+  },
+  "tunnel": {
+    "enabled": false,
+    "provider": "ngrok",
+    "ngrok": {
+      "authToken": ""
+    },
+    "natapp": {
+      "authToken": ""
+    }
+  },
+  "isolation": {
+    "disableGlobalConfig": false,
+    "disableProjectConfig": false
+  },
+  "provider": {},
+  "mcp": {
+    "browser": {
+      "type": "local",
+      "command": [
+        "bun",
+        "run",
+        "packages/browser-mcp-server/bin/browser-mcp-server.ts"
+      ],
+      "environment": {
+        "BRIDGE_URL": "http://127.0.0.1:18793"
+      },
+      "enabled": true
+    }
+  },
+  "browser": {
+    "enabled": true,
+    "bridgePort": 18793,
+    "cdpPort": 9223,
+    "autoLaunch": true,
+    "headless": false
+  },
+  "sandbox": {
+    "enabled": true,
+    "allowedPaths": [
+      "/tmp/*",
+      "~/.cache/*"
+    ],
+    "denyPaths": [
+      "*.env",
+      "*.key",
+      "*.pem",
+      "*credentials*"
+    ]
+  },
+  "compaction": {
+    "auto": true,
+    "prune": true
+  },
+  "instructions": [
+    ".nine1bot/instructions.md",
+    "AGENTS.md"
+  ],
+  "plugin": [],
+  "customProviders": {
+    "kimi": {
+      "name": "kimi",
+      "protocol": "anthropic",
+      "baseURL": "https://api.kimi.com/coding/v1",
+      "models": [
+        {
+          "id": "kimi-for-coding",
+          "name": "kimi-for-coding"
+        }
+      ]
+    }
+  }
+}
