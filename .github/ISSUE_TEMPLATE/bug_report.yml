@@ -1,0 +1,97 @@
+name: Bug Report
+description: Report a reproducible bug, regression, or unexpected behavior / 反馈可复现缺陷、回归或异常行为
+title: '[Bug] '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem.
+
+        感谢反馈问题。请尽量提供可复现信息，方便定位与修复。
+  - type: input
+    id: summary
+    attributes:
+      label: Summary / 问题概述
+      description: A short description of the bug or regression / 用一句话描述问题
+      placeholder: The app crashes when...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected Area / 影响范围
+      options:
+        - CLI / Backend
+        - Web UI
+        - Browser Extension
+        - Browser MCP
+        - Build / Release / Install
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / 版本
+      description: Release version, commit SHA, or branch if known / 已知的话请填写版本号、提交 SHA 或分支
+      placeholder: v1.0.1 / main / abc1234
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Install Method / 安装方式
+      options:
+        - Release package
+        - Homebrew
+        - Source with Bun
+        - Other
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System / 操作系统
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps To Reproduce / 复现步骤
+      description: Please include exact steps when possible / 尽量提供准确步骤
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior / 预期结果
+      placeholder: It should...
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior / 实际结果
+      placeholder: It actually...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs Or Screenshots / 日志或截图
+      description: Paste logs, error messages, or screenshots if available / 如有日志、报错或截图请补充
+      render: shell
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context / 其他补充
+      description: Environment details, workaround, frequency, or related notes / 可补充环境信息、临时绕过方式、出现频率等

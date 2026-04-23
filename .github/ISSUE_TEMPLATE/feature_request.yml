@@ -1,0 +1,69 @@
+name: Feature Request
+description: Suggest an improvement, workflow enhancement, or new capability / 提出功能、体验或工作流改进建议
+title: '[Feature] '
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for sharing an idea.
+
+        感谢提供建议。请优先描述真实使用场景和当前痛点。
+  - type: input
+    id: summary
+    attributes:
+      label: Summary / 建议概述
+      description: A short title for the request / 用一句话概括你的建议
+      placeholder: Add...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Related Area / 相关模块
+      options:
+        - CLI / Backend
+        - Web UI
+        - Browser Extension
+        - Browser MCP
+        - Build / Release / Install
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use Case / 使用场景
+      description: What are you trying to do / 你想完成什么任务
+      placeholder: |
+        I want to...
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Current Problem / 当前问题
+      description: What is difficult or missing today / 当前哪里不方便，或缺少什么能力
+      placeholder: |
+        Today I have to...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution / 期望方案
+      description: Describe the behavior you would like to see / 描述你希望的行为或设计
+      placeholder: |
+        It would help if...
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered / 备选方案
+      description: Optional: workarounds or alternatives you already considered / 可选：你考虑过的替代方案或临时办法
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context / 其他补充
+      description: Screenshots, references, related issues, or examples / 可补充截图、参考链接、相关 issue 或示例

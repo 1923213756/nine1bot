@@ -485,6 +485,8 @@ Welcome to contribute to Nine1Bot!
 - Share usage experiences and best practices
 - Help improve documentation and translations
 
+Please read [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup, issue guidelines, and PR expectations.
+
 ## Acknowledgments
 
 Thanks to the [OpenCode](https://github.com/opencode-ai/opencode) community. Nine1Bot is built on OpenCode.

@@ -485,6 +485,8 @@ bun run build:web
 - 分享使用经验和最佳实践
 - 帮助完善文档和翻译
 
+开始之前，建议先阅读 [CONTRIBUTING.md](./CONTRIBUTING.md) 了解开发环境、Issue 提交流程和 PR 规范。
+
 ## 致谢
 
 感谢 [OpenCode](https://github.com/opencode-ai/opencode) 社区的开源贡献，Nine1Bot 基于 OpenCode 构建。
