@@ -23,6 +23,11 @@ import { Snapshot } from "@/snapshot"
 import type { Provider } from "@/provider/provider"
 import { PermissionNext } from "@/permission/next"
 import { Global } from "@/global"
+import { RuntimeFeatureFlags } from "@/runtime/config/feature-flags"
+import { SessionProfileCompiler } from "@/runtime/session/profile-compiler"
+import { SessionRuntimeProfile } from "@/runtime/session/profile"
+import type { SessionProfileSnapshot } from "@/runtime/protocol/agent-run-spec"
+import { RuntimeContextEvents } from "@/runtime/context/events"
 
 export namespace Session {
   const log = Log.create({ service: "session" })
@@ -69,6 +74,7 @@ export namespace Session {
         archived: z.number().optional(),
       }),
       permission: PermissionNext.Ruleset.optional(),
+      runtime: SessionRuntimeProfile.Summary.optional(),
       revert: z
         .object({
           messageID: z.string(),
@@ -159,8 +165,35 @@ export namespace Session {
     async (input) => {
       // Get parent session to inherit its directory
       const parentSession = await get(input.sessionID)
+      const childID = Identifier.descending("session")
+      let runtimeProfile: SessionProfileSnapshot | undefined
+      let runtimeCurrentModel: SessionRuntimeProfile.CurrentModel | undefined
+      if (await RuntimeFeatureFlags.profileSnapshotEnabled()) {
+        const forked = await SessionRuntimeProfile.cloneForFork(parentSession, {
+          id: childID,
+          projectID: parentSession.projectID,
+        })
+        if (forked) {
+          runtimeProfile = forked.snapshot
+          runtimeCurrentModel = forked.summary.currentModel
+        } else {
+          runtimeProfile = await SessionProfileCompiler.compile({
+            session: {
+              ...parentSession,
+              id: childID,
+              runtime: undefined,
+            },
+            directory: parentSession.directory,
+            permission: parentSession.permission,
+            source: "legacy-resumed",
+          })
+        }
+      }
       const session = await createNext({
+        id: childID,
         directory: parentSession.directory,
+        runtimeProfile,
+        runtimeCurrentModel,
       })
       const msgs = await messages({ sessionID: input.sessionID })
       const idMap = new Map<string, string>()
@@ -203,6 +236,9 @@ export namespace Session {
     parentID?: string
     directory: string
     permission?: PermissionNext.Ruleset
+    runtimeProfile?: SessionProfileSnapshot
+    runtimeCurrentModel?: SessionRuntimeProfile.CurrentModel
+    runtimeAgentName?: string
   }) {
     const result: Info = {
       id: Identifier.descending("session", input.id),
@@ -217,6 +253,20 @@ export namespace Session {
         created: Date.now(),
         updated: Date.now(),
       },
+    }
+    if (await RuntimeFeatureFlags.profileSnapshotEnabled()) {
+      const profile =
+        input.runtimeProfile ??
+        (await SessionProfileCompiler.compile({
+          session: result,
+          directory: result.directory,
+          permission: result.permission,
+          source: "new-session",
+          agentName: input.runtimeAgentName,
+        }))
+      result.runtime = await SessionRuntimeProfile.initialize(result, profile, {
+        currentModel: input.runtimeCurrentModel,
+      })
     }
     log.info("created", result)
     await Storage.write(["session", Instance.project.id, result.id], result)
@@ -366,6 +416,8 @@ export namespace Session {
         await Storage.remove(msg)
       }
       await Storage.remove(["session", project.id, sessionID])
+      await SessionRuntimeProfile.remove(session)
+      await RuntimeContextEvents.removeAll({ sessionID, projectID: project.id })
       Bus.publish(Event.Deleted, {
         info: session,
       })

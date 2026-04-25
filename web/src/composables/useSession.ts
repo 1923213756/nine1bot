@@ -1,5 +1,6 @@
 import { ref, computed } from 'vue'
 import { api, type Session, type Message, type SSEEvent, type MessagePart, type QuestionRequest, type PermissionRequest, type TodoItem, questionApi, permissionApi, SessionBusyError, setApiDirectory } from '../api/client'
+import { collectActivePageContext } from '../api/page-context'
 import { useParallelSessions, MAX_PARALLEL_AGENTS } from './useParallelSessions'
 
 export function useSession() {
@@ -51,10 +52,16 @@ export function useSession() {
 
   // 事件源订阅
   let eventSource: EventSource | null = null
+  let sessionEventSource: EventSource | null = null
+  let subscribedRuntimeSessionId: string | null = null
 
   function reconnectEventsForDirectory() {
-    if (!eventSource) return
-    subscribeToEvents()
+    if (eventSource) {
+      subscribeToEvents()
+    }
+    if (currentSession.value) {
+      subscribeToSessionRuntimeEvents(currentSession.value.id)
+    }
   }
 
   // 通知定时器追踪（用于清理）
@@ -101,6 +108,7 @@ export function useSession() {
     retryInfo.value = null
     todoItems.value = []
     seenUserMessageIds.clear()
+    unsubscribeSessionRuntimeEvents()
   }
 
   /**
@@ -149,17 +157,21 @@ export function useSession() {
   /**
    * 实际创建会话（内部方法，发送消息时调用）
    */
-  async function _createSessionInternal(directory: string): Promise<Session> {
+  async function _createSessionInternal(
+    directory: string,
+    pageContext?: Awaited<ReturnType<typeof collectActivePageContext>>
+  ): Promise<Session> {
     try {
       isLoading.value = true
       setApiDirectory(directory)
       reconnectEventsForDirectory()
-      const session = await api.createSession(directory)
+      const session = await api.createSession(directory, pageContext)
       currentSession.value = session
       // 使用服务器返回的实际目录，而不是传入的参数
       currentDirectory.value = session.directory
       setApiDirectory(currentDirectory.value)
       reconnectEventsForDirectory()
+      subscribeToSessionRuntimeEvents(session.id)
       isDraftSession.value = false
       // 重新加载所有会话，不过滤目录
       await loadSessions()
@@ -189,6 +201,7 @@ export function useSession() {
       currentDirectory.value = session.directory
       setApiDirectory(currentDirectory.value)
       reconnectEventsForDirectory()
+      subscribeToSessionRuntimeEvents(session.id)
       messages.value = []  // Clear immediately to avoid flash of old content
       messages.value = await api.getMessages(session.id)
     } catch (error) {
@@ -201,13 +214,50 @@ export function useSession() {
   // 用于防止用户消息重复
   const seenUserMessageIds = new Set<string>()
 
+  function isSameModel(
+    current: { providerID: string; modelID: string } | undefined,
+    next: { providerID: string; modelID: string }
+  ): boolean {
+    return current?.providerID === next.providerID && current?.modelID === next.modelID
+  }
+
+  function applyCurrentSessionRuntime(update: {
+    currentModel?: { providerID: string; modelID: string; source?: string }
+    profileSnapshotId?: string
+  }) {
+    if (!currentSession.value) return
+
+    const runtime = {
+      ...(currentSession.value.runtime || {}),
+      ...(update.profileSnapshotId ? { profileSnapshotId: update.profileSnapshotId } : {}),
+      ...(update.currentModel ? { currentModel: update.currentModel } : {}),
+    }
+    const updated = {
+      ...currentSession.value,
+      runtime,
+    }
+    currentSession.value = updated
+
+    const index = sessions.value.findIndex(s => s.id === updated.id)
+    if (index !== -1) {
+      sessions.value[index] = updated
+    }
+  }
+
   async function sendMessage(
     content: string,
     model?: { providerID: string; modelID: string },
     files?: Array<{ type: 'file'; mime: string; filename: string; url: string }>
   ) {
+    const draftPageContext =
+      isDraftSession.value || !currentSession.value
+        ? await collectActivePageContext().catch((error) => {
+            console.warn('Failed to collect active page context:', error)
+            return undefined
+          })
+        : undefined
     // 如果是草稿模式或没有当前会话，先创建会话
-    const ensuredSession = await ensureSession()
+    const ensuredSession = await ensureSession(draftPageContext)
     if (!ensuredSession) {
       return
     }
@@ -235,28 +285,22 @@ export function useSession() {
     const sessionId = currentSession.value.id
 
     try {
-      await api.sendMessage(
-        sessionId,
-        content,
-        handleSSEEvent,
-        (error) => {
-          // Ignore abort errors - these are normal when session completes or user cancels
-          const errorMessage = error.message?.toLowerCase() || ''
-          if (errorMessage.includes('aborted') || errorMessage.includes('abort') || error.name === 'AbortError') {
-            console.log('Stream ended (aborted)')
-            return
-          }
-          console.error('Stream error:', error)
-          sessionError.value = {
-            message: `网络错误: ${error.message || '连接中断'}`,
-            dismissable: true
-          }
-          // Mark session as stopped on error
-          setSessionRunning(sessionId, false)
-        },
-        model,
-        files
-      )
+      if (model && !isSameModel(currentSession.value.runtime?.currentModel, model)) {
+        const modelResult = await api.changeSessionModel(sessionId, model)
+        applyCurrentSessionRuntime({
+          currentModel: modelResult.currentModel,
+          profileSnapshotId: modelResult.profileSnapshotId,
+        })
+      }
+
+      subscribeToSessionRuntimeEvents(sessionId)
+      const pageContext =
+        draftPageContext ??
+        (await collectActivePageContext().catch((error) => {
+          console.warn('Failed to collect active page context:', error)
+          return undefined
+        }))
+      await api.sendMessage(sessionId, content, files, pageContext)
     } catch (error: any) {
       // Ignore abort errors
       const errorMessage = error.message?.toLowerCase() || ''
@@ -288,13 +332,15 @@ export function useSession() {
     }
   }
 
-  async function ensureSession(): Promise<Session | null> {
+  async function ensureSession(
+    pageContext?: Awaited<ReturnType<typeof collectActivePageContext>>
+  ): Promise<Session | null> {
     if (!isDraftSession.value && currentSession.value) {
       return currentSession.value
     }
 
     try {
-      return await _createSessionInternal(currentDirectory.value || '.')
+      return await _createSessionInternal(currentDirectory.value || '.', pageContext)
     } catch (error) {
       console.error('Failed to ensure session:', error)
       sessionError.value = {
@@ -509,6 +555,16 @@ export function useSession() {
         }
         break
 
+      case 'runtime.resource.failed':
+        if (properties?.sessionID && currentSession.value && properties.sessionID !== currentSession.value.id) {
+          break
+        }
+        sessionError.value = {
+          message: properties?.message || '资源不可用，请检查当前配置',
+          dismissable: true
+        }
+        break
+
       case 'session.idle':
         // Note: session running state is handled by handleGlobalSSEEvent
         if (properties?.sessionID && currentSession.value && properties.sessionID !== currentSession.value.id) {
@@ -615,12 +671,43 @@ export function useSession() {
     })
   }
 
+  function subscribeToSessionRuntimeEvents(sessionId: string) {
+    if (sessionEventSource && subscribedRuntimeSessionId === sessionId) {
+      return
+    }
+
+    unsubscribeSessionRuntimeEvents()
+    subscribedRuntimeSessionId = sessionId
+    sessionEventSource = api.subscribeSessionRuntimeEvents(sessionId, (event: SSEEvent) => {
+      handleGlobalSSEEvent(event)
+
+      for (const handler of externalEventHandlers) {
+        try {
+          handler(event)
+        } catch (e) {
+          console.error('External event handler error:', e)
+        }
+      }
+
+      handleSSEEvent(event)
+    })
+  }
+
+  function unsubscribeSessionRuntimeEvents() {
+    if (sessionEventSource) {
+      sessionEventSource.close()
+      sessionEventSource = null
+    }
+    subscribedRuntimeSessionId = null
+  }
+
   // 取消订阅
   function unsubscribe() {
     if (eventSource) {
       eventSource.close()
       eventSource = null
     }
+    unsubscribeSessionRuntimeEvents()
     // 清理所有通知定时器
     for (const timerId of notificationTimers.values()) {
       clearTimeout(timerId)
@@ -716,6 +803,7 @@ export function useSession() {
         } else {
           currentSession.value = null
           messages.value = []
+          unsubscribeSessionRuntimeEvents()
         }
       }
     } catch (error) {

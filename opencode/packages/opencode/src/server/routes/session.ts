@@ -20,6 +20,9 @@ import { Agent } from "../../agent/agent"
 import { Snapshot } from "@/snapshot"
 import { Log } from "../../util/log"
 import { PermissionNext } from "@/permission/next"
+import { RuntimePromptBridgeCompiler } from "@/runtime/bridge/prompt-compiler"
+import { LegacyAgentRunSpecAdapter } from "@/runtime/compat/legacy-agent-run-spec-adapter"
+import { RuntimeFeatureFlags } from "@/runtime/config/feature-flags"
 import { Filesystem } from "@/util/filesystem"
 import { errors } from "../error"
 import { lazy } from "../../util/lazy"
@@ -33,6 +36,10 @@ const SessionUploadResponse = z.object({
   url: z.string(),
   size: z.number(),
 })
+type LegacySessionPromptBody = Omit<
+  SessionPrompt.PromptInput,
+  "sessionID" | "runtimeModelSource" | "runtimeProfileSnapshot"
+>
 
 function sanitizeUploadFilename(filename?: string) {
   const basename = path.basename((filename || "").replace(/\0/g, "")).trim()
@@ -49,6 +56,36 @@ async function pathExists(target: string) {
   } catch {
     return false
   }
+}
+
+async function compileLegacySessionPrompt(
+  sessionID: string,
+  body: LegacySessionPromptBody,
+  mode: string,
+) {
+  SessionPrompt.assertNotBusy(sessionID)
+
+  if (!(await RuntimeFeatureFlags.agentRunSpecEnabled())) {
+    return { ...body, sessionID }
+  }
+
+  const session = await Session.get(sessionID)
+  const spec = await LegacyAgentRunSpecAdapter.fromSessionMessage({
+    session,
+    body,
+    entry: {
+      source: "api",
+      mode,
+    },
+  })
+  const snapshot = RuntimePromptBridgeCompiler.compileTurnSnapshot(spec, {
+    messageID: body.messageID,
+    tools: body.tools,
+    system: body.system,
+    variant: body.variant,
+    context: body.context,
+  })
+  return RuntimePromptBridgeCompiler.compilePrompt(snapshot)
 }
 
 async function createUploadTarget(session: Pick<Session.Info, "id" | "directory">, originalFilename?: string) {
@@ -987,14 +1024,24 @@ export const SessionRoutes = lazy(() =>
           sessionID: z.string().meta({ description: "Session ID" }),
         }),
       ),
-      validator("json", SessionPrompt.PromptInput.omit({ sessionID: true })),
+      validator(
+        "json",
+        SessionPrompt.PromptInput.omit({
+          sessionID: true,
+          runtimeModelSource: true,
+          runtimeProfileSnapshot: true,
+          runtimeTurnSnapshotId: true,
+        }),
+      ),
       async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        const body = c.req.valid("json")
+        const prompt = await compileLegacySessionPrompt(sessionID, body, "legacy-session-message")
+
         c.status(200)
         c.header("Content-Type", "application/json")
         return stream(c, async (stream) => {
-          const sessionID = c.req.valid("param").sessionID
-          const body = c.req.valid("json")
-          const msg = await SessionPrompt.prompt({ ...body, sessionID })
+          const msg = await SessionPrompt.prompt(prompt)
           stream.write(JSON.stringify(msg))
         })
       },
@@ -1019,11 +1066,20 @@ export const SessionRoutes = lazy(() =>
           sessionID: z.string().meta({ description: "Session ID" }),
         }),
       ),
-      validator("json", SessionPrompt.PromptInput.omit({ sessionID: true })),
+      validator(
+        "json",
+        SessionPrompt.PromptInput.omit({
+          sessionID: true,
+          runtimeModelSource: true,
+          runtimeProfileSnapshot: true,
+          runtimeTurnSnapshotId: true,
+        }),
+      ),
       async (c) => {
         const sessionID = c.req.valid("param").sessionID
         const body = c.req.valid("json")
-        await SessionPrompt.promptAsync({ ...body, sessionID })
+        const prompt = await compileLegacySessionPrompt(sessionID, body, "legacy-session-prompt-async")
+        await SessionPrompt.promptAsync(prompt)
         return new Response(null, { status: 204 })
       },
     )

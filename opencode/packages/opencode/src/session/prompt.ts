@@ -47,6 +47,16 @@ import { iife } from "@/util/iife"
 import { Shell } from "@/shell/shell"
 import { Truncate } from "@/tool/truncation"
 import { ProjectEnvironment } from "@/project/environment"
+import { RuntimeTiming } from "./timing"
+import { RuntimeFeatureFlags } from "@/runtime/config/feature-flags"
+import { SessionRuntimeProfile } from "@/runtime/session/profile"
+import { SessionProfileCompiler } from "@/runtime/session/profile-compiler"
+import type { SessionProfileSnapshot } from "@/runtime/protocol/agent-run-spec"
+import { RuntimeContextEvents } from "@/runtime/context/events"
+import { RuntimeContextLegacy } from "@/runtime/context/legacy"
+import { RuntimeContextPipeline } from "@/runtime/context/pipeline"
+import { RuntimeResourceResolver } from "@/runtime/resource/resolver"
+import { RuntimeControllerEvents } from "@/runtime/controller/events"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -64,10 +74,10 @@ export namespace SessionPrompt {
     "application/vnd.ms-excel": { type: "Excel spreadsheet (legacy)", skill: "xlsx" },
   }
 
-  function describeUploadedFile(mime: string) {
+  function describeUploadedFile(mime: string, availableSkills?: Set<string>) {
     const fileInfo = uploadedFileTypeMap[mime]
     const fileTypeDesc = fileInfo ? `a ${fileInfo.type}` : mime.startsWith("image/") ? "an image" : "a file"
-    const skillHint = fileInfo?.skill
+    const skillHint = fileInfo?.skill && (availableSkills === undefined || availableSkills.has(fileInfo.skill))
       ? `, or invoke the appropriate skill (e.g., /${fileInfo.skill}) for advanced operations`
       : ""
     return {
@@ -157,8 +167,9 @@ export namespace SessionPrompt {
     },
     uploadFilePath: string,
     filename?: string,
+    availableSkills?: Set<string>,
   ) {
-    const { fileTypeDesc, skillHint } = describeUploadedFile(part.mime)
+    const { fileTypeDesc, skillHint } = describeUploadedFile(part.mime, availableSkills)
     const displayName = filename || part.filename || path.basename(uploadFilePath)
 
     return [
@@ -207,6 +218,9 @@ export namespace SessionPrompt {
         modelID: z.string(),
       })
       .optional(),
+    runtimeModelSource: z.enum(["profile-snapshot", "session-choice"]).optional(),
+    runtimeProfileSnapshot: z.custom<SessionProfileSnapshot>().optional(),
+    runtimeTurnSnapshotId: z.string().optional(),
     agent: z.string().optional(),
     noReply: z.boolean().optional(),
     tools: z
@@ -215,6 +229,7 @@ export namespace SessionPrompt {
       .describe(
         "@deprecated tools and permissions have been merged, you can set permissions on the session itself now",
       ),
+    context: RuntimeContextEvents.Input,
     system: z.string().optional(),
     variant: z.string().optional(),
     parts: z.array(
@@ -294,14 +309,35 @@ export namespace SessionPrompt {
     release,
   }
 
-  async function acceptPrompt(input: PromptInput) {
+  async function acceptPrompt(input: PromptInput, timing?: RuntimeTiming.Trace) {
     const abort = reserve(input.sessionID)
-    const session = await Session.get(input.sessionID)
+    timing?.mark("busy.reserved")
+    let session = await Session.get(input.sessionID)
+    timing?.mark("session.loaded", { directory: session.directory })
     try {
-      await SessionRevert.cleanup(session)
+      session = await ensureRuntimeProfile(input, session, timing)
+      const preparedContextEvent = await RuntimeContextEvents.preparePageEvent({
+        sessionID: session.id,
+        projectID: session.projectID,
+        page: input.context?.page,
+      })
+      const promptInput = await prepareRuntimeContextInput(input, timing)
+      await RuntimeTiming.measure(timing, "revert.cleanup", () => SessionRevert.cleanup(session))
 
-      const message = await createUserMessage(input, session)
+      const message = await RuntimeTiming.measure(timing, "user_message.create", () => createUserMessage(promptInput, session))
+      if (preparedContextEvent) {
+        await RuntimeContextEvents.commitPageEvent({
+          sessionID: session.id,
+          projectID: session.projectID,
+          prepared: preparedContextEvent,
+        })
+        timing?.mark("context_event.page.committed", {
+          eventID: preparedContextEvent.event?.id,
+          deduped: preparedContextEvent.deduped,
+        })
+      }
       await Session.touch(input.sessionID)
+      timing?.mark("session.touched", { messageID: message.info.id })
 
       // this is backwards compatibility for allowing `tools` to be specified when
       // prompting
@@ -318,6 +354,7 @@ export namespace SessionPrompt {
         await Session.update(session.id, (draft) => {
           draft.permission = permissions
         })
+        timing?.mark("legacy_tools_permissions.applied", { count: permissions.length })
       }
 
       return {
@@ -330,24 +367,122 @@ export namespace SessionPrompt {
     }
   }
 
+  async function ensureRuntimeProfile(
+    input: PromptInput,
+    session: Session.Info,
+    timing?: RuntimeTiming.Trace,
+  ): Promise<Session.Info> {
+    if (!(await RuntimeFeatureFlags.profileSnapshotEnabled())) return session
+
+    let profile = await SessionRuntimeProfile.read(session)
+    let current = session
+    if (!profile) {
+      profile =
+        input.runtimeProfileSnapshot ??
+        (await SessionProfileCompiler.compile({
+          session,
+          directory: session.directory,
+          permission: session.permission,
+          source: "legacy-resumed",
+        }))
+      const currentModel =
+        input.model && input.runtimeModelSource === "session-choice"
+          ? SessionRuntimeProfile.currentModel(input.model, "session-choice")
+          : undefined
+      const runtime = await SessionRuntimeProfile.initialize(session, profile, { currentModel })
+      current = await Session.update(
+        session.id,
+        (draft) => {
+          draft.runtime = runtime
+        },
+        { touch: false },
+      )
+      timing?.mark("runtime_profile.legacy_resumed", { profileSnapshotID: profile.id })
+    }
+
+    if (await RuntimeFeatureFlags.resourceResolverEnabled()) {
+      const resourceProfile = await RuntimeResourceResolver.withProfileResources(profile)
+      if (resourceProfile !== profile) {
+        profile = resourceProfile
+        await SessionRuntimeProfile.write(current, profile)
+        timing?.mark("runtime_profile.resources.backfilled", { profileSnapshotID: profile.id })
+      }
+    }
+
+    if (input.model && input.runtimeModelSource === "session-choice") {
+      const runtimeModel = SessionRuntimeProfile.currentModel(input.model, "session-choice")
+      const runtime = SessionRuntimeProfile.withCurrentModel(
+        current.runtime ?? SessionRuntimeProfile.summarize(profile, runtimeModel),
+        runtimeModel,
+      )
+      current = await Session.update(
+        current.id,
+        (draft) => {
+          draft.runtime = runtime
+        },
+        { touch: false },
+      )
+      timing?.mark("runtime_profile.current_model.updated", {
+        providerID: runtimeModel.providerID,
+        modelID: runtimeModel.modelID,
+      })
+    }
+
+    return current
+  }
+
+  async function prepareRuntimeContextInput(input: PromptInput, timing?: RuntimeTiming.Trace): Promise<PromptInput> {
+    if (!(await RuntimeFeatureFlags.contextPipelineEnabled())) return input
+    const blocks = input.context?.blocks ?? []
+    if (blocks.length === 0) return input
+    const compiled = await RuntimeContextPipeline.compile({ blocks })
+    await Bus.publish(RuntimeControllerEvents.ContextCompiled, {
+      sessionID: input.sessionID,
+      turnSnapshotId: input.runtimeTurnSnapshotId,
+      blockCount: blocks.length,
+      renderedCount: compiled.rendered.length,
+      droppedCount: compiled.dropped.length,
+      tokenEstimate: compiled.tokenEstimate,
+      audit: compiled.audit,
+      dropped: compiled.dropped,
+    }).catch((error) => log.warn("failed to publish context compiled event", { error }))
+    timing?.mark("context.turn_blocks.compiled", {
+      rendered: compiled.rendered.length,
+      dropped: compiled.dropped.length,
+    })
+    if (compiled.rendered.length === 0) return input
+    return {
+      ...input,
+      system: [input.system, ...compiled.rendered].filter(Boolean).join("\n\n"),
+    }
+  }
+
   export const prompt = fn(PromptInput, async (input) => {
-    const accepted = await acceptPrompt(input)
+    const timing = RuntimeTiming.start({ sessionID: input.sessionID, operation: "prompt", source: "session.prompt" })
+    const accepted = await acceptPrompt(input, timing)
     if (input.noReply === true) {
       release(input.sessionID)
+      timing.mark("prompt.no_reply.completed")
       return accepted.message
     }
 
-    return loopWithAbort(input.sessionID, accepted.abort)
+    return loopWithAbort(input.sessionID, accepted.abort, timing, input.runtimeTurnSnapshotId)
   })
 
   export const promptAsync = fn(PromptInput, async (input) => {
-    const accepted = await acceptPrompt(input)
+    const timing = RuntimeTiming.start({
+      sessionID: input.sessionID,
+      operation: "prompt_async",
+      source: "session.prompt_async",
+    })
+    const accepted = await acceptPrompt(input, timing)
     if (input.noReply === true) {
       release(input.sessionID)
+      timing.mark("prompt_async.no_reply.completed")
       return
     }
 
-    void loopWithAbort(input.sessionID, accepted.abort).catch((error) =>
+    void loopWithAbort(input.sessionID, accepted.abort, timing, input.runtimeTurnSnapshotId).catch((error) =>
       log.error("prompt_async failed", { sessionID: input.sessionID, error }),
     )
   })
@@ -408,15 +543,30 @@ export namespace SessionPrompt {
     release(sessionID, { abort: true })
   }
 
-  async function loopWithAbort(sessionID: string, abort: AbortSignal) {
+  async function loopWithAbort(
+    sessionID: string,
+    abort: AbortSignal,
+    timing?: RuntimeTiming.Trace,
+    runtimeTurnSnapshotId?: string,
+  ) {
     using _ = defer(() => release(sessionID))
 
     let step = 0
     const session = await Session.get(sessionID)
+    let contextCache: { userMessageID: string; compiled: RuntimeContextPipeline.CompiledContext } | undefined
+    let resourceCache: { userMessageID: string; resolved: RuntimeResourceResolver.Resolved } | undefined
+    timing?.mark("loop.session.loaded")
     while (true) {
       log.info("loop", { step, sessionID })
+      timing?.mark("loop.step.started", { step })
       if (abort.aborted) break
-      let msgs = await MessageV2.filterCompacted(MessageV2.stream(sessionID))
+      let msgs = await RuntimeTiming.measure(
+        timing,
+        "history.load",
+        () => MessageV2.filterCompacted(MessageV2.stream(sessionID)),
+        { step },
+      )
+      timing?.mark("history.loaded", { step, messageCount: msgs.length })
 
       let lastUser: MessageV2.User | undefined
       let lastAssistant: MessageV2.Assistant | undefined
@@ -457,7 +607,12 @@ export namespace SessionPrompt {
       // 获取模型，如果模型不存在则发布错误事件并退出循环（不崩溃）
       let model
       try {
-        model = await Provider.getModel(lastUser.model.providerID, lastUser.model.modelID)
+        model = await RuntimeTiming.measure(
+          timing,
+          "model.resolve",
+          () => Provider.getModel(lastUser.model.providerID, lastUser.model.modelID),
+          { step, providerID: lastUser.model.providerID, modelID: lastUser.model.modelID },
+        )
       } catch (e) {
         if (Provider.ModelNotFoundError.isInstance(e)) {
           const { providerID, modelID, suggestions } = e.data
@@ -678,7 +833,12 @@ export namespace SessionPrompt {
 
       // pre-flight context window check: estimate token count before sending
       if (model.limit.context > 0) {
-        const modelMessages = MessageV2.toModelMessages(clone(msgs), model)
+        const modelMessages = await RuntimeTiming.measure(
+          timing,
+          "messages.to_model.preflight",
+          () => MessageV2.toModelMessages(clone(msgs), model),
+          { step },
+        )
         let charCount = 0
         for (const msg of modelMessages) {
           if (typeof msg.content === "string") {
@@ -696,20 +856,31 @@ export namespace SessionPrompt {
         const usable = model.limit.input || model.limit.context - outputReserve
         if (estimatedTokens > usable) {
           log.info("pre-flight overflow detected", { estimatedTokens, usable, sessionID })
+          timing?.mark("context_window.overflow", { step, estimatedTokens, usable })
           await SessionCompaction.prune({ sessionID })
           msgs = await MessageV2.filterCompacted(MessageV2.stream(sessionID))
         }
+        timing?.mark("context_window.checked", { step, estimatedTokens, usable })
       }
 
       // normal processing
-      const agent = await Agent.get(lastUser.agent)
+      const agent = await RuntimeTiming.measure(timing, "agent.resolve", () => Agent.get(lastUser.agent), {
+        step,
+        agent: lastUser.agent,
+      })
       const maxSteps = agent.steps ?? Infinity
       const isLastStep = step >= maxSteps
-      msgs = await insertReminders({
-        messages: msgs,
-        agent,
-        session,
-      })
+      msgs = await RuntimeTiming.measure(
+        timing,
+        "reminders.insert",
+        () =>
+          insertReminders({
+            messages: msgs,
+            agent,
+            session,
+          }),
+        { step },
+      )
 
       const processor = SessionProcessor.create({
         assistantMessage: (await Session.updateMessage({
@@ -740,19 +911,50 @@ export namespace SessionPrompt {
         model,
         abort,
       })
+      timing?.mark("assistant_message.created", { step, messageID: processor.message.id })
 
       // Check if user explicitly invoked an agent via @ in this turn
       const lastUserMsg = msgs.findLast((m) => m.info.role === "user")
       const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
 
-      const tools = await resolveTools({
-        agent,
-        session,
-        model,
-        tools: lastUser.tools,
-        processor,
-        bypassAgentCheck,
-        messages: msgs,
+      const tools = await RuntimeTiming.measure(
+        timing,
+        "resources.resolve",
+        async () => {
+          const resolvedResources = (await RuntimeFeatureFlags.resourceResolverEnabled())
+            ? resourceCache?.userMessageID === lastUser.id
+              ? resourceCache.resolved
+              : await RuntimeResourceResolver.resolve({
+                  sessionID,
+                  turnSnapshotId: runtimeTurnSnapshotId,
+                  profile: await SessionRuntimeProfile.read(session),
+                })
+            : undefined
+          if (resolvedResources) {
+            resourceCache = {
+              userMessageID: lastUser.id,
+              resolved: resolvedResources,
+            }
+          }
+          return resolveTools({
+            agent,
+            session,
+            model,
+            tools: lastUser.tools,
+            processor,
+            bypassAgentCheck,
+            messages: msgs,
+            resources: resolvedResources,
+          })
+        },
+        { step },
+      )
+      timing?.mark("resources.resolved", {
+        step,
+        toolCount: Object.keys(tools).length,
+        mcpServers: resourceCache?.resolved.mcp.availableServers.length,
+        skills: resourceCache?.resolved.skills.availableSkills.length,
+        failures: resourceCache?.resolved.failures.length,
       })
 
       if (step === 1) {
@@ -763,19 +965,95 @@ export namespace SessionPrompt {
       }
 
       const sessionMessages = clone(msgs)
-      await Plugin.trigger("experimental.chat.messages.transform", {}, { messages: sessionMessages })
+      await RuntimeTiming.measure(
+        timing,
+        "messages.plugin_transform",
+        () => Plugin.trigger("experimental.chat.messages.transform", {}, { messages: sessionMessages }),
+        { step },
+      )
 
+      const compiledContext = await RuntimeTiming.measure(
+        timing,
+        "context.compile",
+        async () => {
+          if (!(await RuntimeFeatureFlags.contextPipelineEnabled())) {
+            const environmentSystem = await SystemPrompt.environment(model, session.directory)
+            const instructionSystem = await InstructionPrompt.system()
+            return {
+              blocks: [],
+              rendered: [...environmentSystem, ...instructionSystem],
+              dropped: [],
+              audit: [],
+              tokenEstimate: 0,
+            } satisfies RuntimeContextPipeline.CompiledContext
+          }
+          if (contextCache?.userMessageID === lastUser.id) return contextCache.compiled
+          const profile = await SessionRuntimeProfile.read(session)
+          const environmentSystem = await SystemPrompt.environment(model, session.directory)
+          const instructionSystem = await InstructionPrompt.system()
+          const contextEvents = await RuntimeContextEvents.list({
+            sessionID,
+            projectID: session.projectID,
+            limit: 8,
+          })
+          const blocks = [
+            ...(profile?.context.blocks ?? []),
+            ...RuntimeContextLegacy.environmentBlocks(environmentSystem),
+            ...RuntimeContextLegacy.instructionBlocks(instructionSystem),
+            ...RuntimeContextEvents.blocksFromEvents(contextEvents),
+            ...(lastUser.system ? [RuntimeContextLegacy.turnSystemBlock(lastUser.system)] : []),
+          ]
+          const compiled = await RuntimeContextPipeline.compile({
+            blocks,
+            policy: profile?.context.policy,
+          })
+          contextCache = {
+            userMessageID: lastUser.id,
+            compiled,
+          }
+          return compiled
+        },
+        { step },
+      )
+      const modelMessages = await RuntimeTiming.measure(
+        timing,
+        "messages.to_model",
+        () => MessageV2.toModelMessages(sessionMessages, model),
+        { step },
+      )
+      timing?.mark("context.compile.audit", {
+        step,
+        renderedContextBlocks: compiledContext.blocks.map((block) => ({
+          id: block.id,
+          layer: block.layer,
+          source: block.source,
+        })),
+        droppedContextBlocks: compiledContext.dropped,
+        tokenEstimate: compiledContext.tokenEstimate,
+      })
+      timing?.mark("llm.input.prepared", {
+        step,
+        systemBlocks: compiledContext.rendered.length,
+        contextBlocks: compiledContext.blocks.length,
+        droppedContextBlocks: compiledContext.dropped.length,
+        messageCount: modelMessages.length,
+        toolCount: Object.keys(tools).length,
+      })
+
+      const runtimeUser: MessageV2.User = (await RuntimeFeatureFlags.contextPipelineEnabled())
+        ? {
+            ...lastUser,
+            system: undefined,
+          }
+        : lastUser
       const result = await processor.process({
-        user: lastUser,
+        user: runtimeUser,
         agent,
         abort,
         sessionID,
-        system: [
-          ...(await SystemPrompt.environment(model, session.directory)),
-          ...(await InstructionPrompt.system()),
-        ],
+        system: compiledContext.rendered,
         messages: [
-          ...MessageV2.toModelMessages(sessionMessages, model),
+          ...modelMessages,
           ...(isLastStep
             ? [
                 {
@@ -787,7 +1065,8 @@ export namespace SessionPrompt {
         ],
         tools,
         model,
-      })
+      }, { timing })
+      timing?.mark("processor.process.completed", { step, result })
       if (result === "stop") break
       if (result === "compact") {
         await SessionCompaction.create({
@@ -827,6 +1106,7 @@ export namespace SessionPrompt {
     processor: SessionProcessor.Info
     bypassAgentCheck: boolean
     messages: MessageV2.WithParts[]
+    resources?: RuntimeResourceResolver.Resolved
   }) {
     using _ = log.time("resolveTools")
     const tools: Record<string, AITool> = {}
@@ -870,6 +1150,7 @@ export namespace SessionPrompt {
     for (const item of await ToolRegistry.tools(
       { modelID: input.model.api.id, providerID: input.model.providerID },
       input.agent,
+      { skills: input.resources?.skills.availableSkills },
     )) {
       const schema = ProviderTransform.schema(input.model, z.toJSONSchema(item.parameters))
       tools[item.id] = tool({
@@ -908,7 +1189,26 @@ export namespace SessionPrompt {
     // This ensures local MCP processes use session directory as cwd
     const mcpTools = await Instance.provide({
       directory: input.session.directory,
-      fn: () => MCP.tools(),
+      fn: () =>
+        MCP.tools({
+          servers: input.resources?.mcp.availableServers,
+          onFailure: async (failure) => {
+            await Bus.publish(RuntimeResourceResolver.Failed, {
+              sessionID: input.session.id,
+              resourceType: "mcp",
+              resourceID: failure.server,
+              status: failure.stage === "auth" ? "auth-required" : "unavailable",
+              stage: failure.stage,
+              reason: failure.reason,
+              message: failure.message,
+              recoverable: true,
+              action: {
+                type: "retry",
+                label: "Retry MCP connection",
+              },
+            })
+          },
+        }),
     })
 
     for (const [key, item] of Object.entries(mcpTools)) {
@@ -1007,6 +1307,25 @@ export namespace SessionPrompt {
 
   async function createUserMessage(input: PromptInput, session: Session.Info) {
     const agent = await Agent.get(input.agent ?? (await Agent.defaultAgent()))
+    const needsSkillHint = input.parts.some(
+      (part) => part.type === "file" && uploadedFileTypeMap[part.mime]?.skill,
+    )
+    const profile =
+      needsSkillHint && (await RuntimeFeatureFlags.resourceResolverEnabled())
+        ? await SessionRuntimeProfile.read(session)
+        : undefined
+    const resolvedResources =
+      profile && (await RuntimeFeatureFlags.resourceResolverEnabled())
+        ? await RuntimeResourceResolver.resolve({
+            sessionID: session.id,
+            profile,
+            emitFailures: false,
+            emitResolved: false,
+          })
+        : undefined
+    const availableSkills = resolvedResources
+      ? new Set(resolvedResources.skills.availableSkills.map((skill) => skill.name))
+      : undefined
     const info: MessageV2.Info = {
       id: input.messageID ?? Identifier.ascending("message"),
       role: "user",
@@ -1105,7 +1424,7 @@ export namespace SessionPrompt {
 
                 log.info("saved uploaded file", { path: saved.uploadFilePath, mime: part.mime })
 
-                return createManagedUploadParts(input, info, part, saved.uploadFilePath, saved.filename)
+                return createManagedUploadParts(input, info, part, saved.uploadFilePath, saved.filename, availableSkills)
               }
             case "file:":
               log.info("file", { mime: part.mime })
@@ -1159,7 +1478,14 @@ export namespace SessionPrompt {
               }
 
               FileTime.read(input.sessionID, filepath)
-              return createManagedUploadParts(input, info, part, filepath, part.filename ?? path.basename(filepath))
+              return createManagedUploadParts(
+                input,
+                info,
+                part,
+                filepath,
+                part.filename ?? path.basename(filepath),
+                availableSkills,
+              )
           }
         }
 
