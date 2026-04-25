@@ -2,14 +2,14 @@ import z from "zod"
 import { ulid } from "ulid"
 import { Instance } from "@/project/instance"
 import { Storage } from "@/storage/storage"
-import { RuntimeGitLabPageAdapter } from "@/runtime/context/adapters/gitlab"
 import { RuntimeContextPipeline } from "@/runtime/context/pipeline"
 import type { ContextBlock } from "@/runtime/protocol/agent-run-spec"
+import { RuntimePlatformAdapterRegistry } from "@/runtime/platform/adapter"
 
 export namespace RuntimeContextEvents {
   export const RequestPagePayload = z
     .object({
-      platform: z.enum(["gitlab", "generic-browser", "feishu"]),
+      platform: z.string(),
       url: z.string().optional(),
       pageType: z.string().optional(),
       title: z.string().optional(),
@@ -158,7 +158,7 @@ export namespace RuntimeContextEvents {
 
   export function blocksFromPagePayload(page: RequestPagePayload, observedAt = Date.now()): ContextBlock[] {
     const adapted = normalizePagePayload(page)
-    const adapterBlocks = RuntimeGitLabPageAdapter.blocksFromPage(adapted, observedAt)
+    const adapterBlocks = RuntimePlatformAdapterRegistry.blocksFromPage(adapted, observedAt)
     if (adapterBlocks) return adapterBlocks
 
     const blocks: ContextBlock[] = [
@@ -193,10 +193,7 @@ export namespace RuntimeContextEvents {
   }
 
   export function normalizePagePayload(page: RequestPagePayload): RequestPagePayload {
-    if (page.platform === "gitlab" || RuntimeGitLabPageAdapter.parseGitLabUrl(page.url)) {
-      return RuntimeGitLabPageAdapter.adapt({ ...page, platform: "gitlab" }) as RequestPagePayload
-    }
-    return page
+    return RuntimePlatformAdapterRegistry.normalizePage(page) as RequestPagePayload
   }
 
   function eventType(previous: PageContextState | undefined, next: PageContextState): ContextEvent["type"] | undefined {

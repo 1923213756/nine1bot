@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { buildPageContextPayload, parseGitLabUrl } from '../src/page-context/gitlab'
+import { buildPageContextPayload, parseGitLabUrl } from '@nine1bot/platform-gitlab/browser'
 
 describe('browser extension GitLab page parser', () => {
   it('detects GitLab repo, file, tree, merge request, and issue pages', () => {

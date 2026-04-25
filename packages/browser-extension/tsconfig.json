@@ -12,7 +12,6 @@
     "declarationMap": false,
     "sourceMap": true,
     "outDir": "./dist",
-    "rootDir": "./src",
     "types": ["chrome"]
   },
   "include": ["src/**/*.ts"],

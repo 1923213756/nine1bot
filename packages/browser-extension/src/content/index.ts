@@ -5,7 +5,7 @@
  * that need to run in the context of the page.
  */
 
-import { buildPageContextPayload } from '../page-context/gitlab'
+import { buildPageContextPayload } from '@nine1bot/platform-gitlab/browser'
 
 console.log('[Nine1Bot Content Script] Loaded on:', window.location.href)
 

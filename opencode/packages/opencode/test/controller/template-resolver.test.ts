@@ -1,12 +1,17 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { Instance } from "../../src/project/instance"
 import { ControllerTemplateResolver } from "../../src/runtime/controller/template-resolver"
+import { RuntimePlatformAdapterRegistry } from "../../src/runtime/platform/adapter"
 import { RuntimeResourceResolver } from "../../src/runtime/resource/resolver"
 import { SessionProfileCompiler } from "../../src/runtime/session/profile-compiler"
 import { tmpdir } from "../fixture/fixture"
 
 describe("controller template resolver", () => {
-  test("creates distinct scene templates for web, Feishu, and browser GitLab sessions", async () => {
+  afterEach(() => {
+    RuntimePlatformAdapterRegistry.clearForTesting()
+  })
+
+  test("creates distinct scene templates for web, Feishu, and registered browser platform sessions", async () => {
     await using tmp = await tmpdir({
       git: true,
       config: {
@@ -23,6 +28,45 @@ describe("controller template resolver", () => {
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
+        RuntimePlatformAdapterRegistry.register({
+          id: "test-platform",
+          matchPage: (page) => page.platform === "test-platform",
+          normalizePage: (page) => ({
+            ...page,
+            pageType: "test-mr",
+            objectKey: "test-platform:project!42",
+          }),
+          inferTemplateIds: (input) => input.page?.platform === "test-platform" ? ["browser-test-platform", "test-mr"] : [],
+          templateContextBlocks: (input) => input.templateIds
+            .filter((templateId) => templateId === "browser-test-platform" || templateId === "test-mr")
+            .map((templateId) => ({
+              id: `template:${templateId}`,
+              layer: "platform",
+              source: `template.${templateId}`,
+              content: `Template ${templateId}`,
+              lifecycle: "session",
+              visibility: "developer-toggle",
+              enabled: true,
+              priority: 40,
+            })),
+          resourceContributions: (input) => input.templateIds.includes("browser-test-platform")
+            ? {
+                builtinTools: {
+                  enabledGroups: ["test-platform-context"],
+                },
+                mcp: {
+                  servers: [],
+                  lifecycle: "session",
+                  mergeMode: "additive-only",
+                },
+                skills: {
+                  skills: [],
+                  lifecycle: "session",
+                  mergeMode: "additive-only",
+                },
+              }
+            : undefined,
+        })
         const web = await ControllerTemplateResolver.resolve({
           entry: {
             source: "web",
@@ -38,34 +82,34 @@ describe("controller template resolver", () => {
             templateIds: ["default-user-template", "feishu-chat"],
           },
         })
-        const gitlab = await ControllerTemplateResolver.resolve({
+        const platform = await ControllerTemplateResolver.resolve({
           entry: {
             source: "browser-extension",
-            platform: "gitlab",
+            platform: "test-platform",
             mode: "browser-sidepanel",
-            templateIds: ["default-user-template", "browser-generic", "browser-gitlab"],
+            templateIds: ["default-user-template", "browser-generic", "browser-test-platform"],
           },
           page: {
-            platform: "gitlab",
-            url: "https://gitlab.com/nine1/nine1bot/-/merge_requests/42",
+            platform: "test-platform",
+            url: "https://example.test/nine1/nine1bot/-/merge_requests/42",
             title: "Improve runtime",
           },
         })
 
         expect(web.templateIds).toContain("web-chat")
         expect(feishu.templateIds).toContain("feishu-chat")
-        expect(gitlab.templateIds).toEqual([
+        expect(platform.templateIds).toEqual([
           "default-user-template",
           "browser-generic",
-          "browser-gitlab",
-          "gitlab-mr",
+          "browser-test-platform",
+          "test-mr",
         ])
         expect(web.contextPreview.map((block) => block.source)).toContain("template.web-chat")
         expect(feishu.contextPreview.map((block) => block.source)).toContain("template.feishu-chat")
-        expect(gitlab.contextPreview.map((block) => block.source)).toContain("template.browser-gitlab")
+        expect(platform.contextPreview.map((block) => block.source)).toContain("template.browser-test-platform")
         expect(web.resourcesPreview.builtinGroups).toContain("web-chat")
         expect(feishu.resourcesPreview.builtinGroups).toContain("chat-text")
-        expect(gitlab.resourcesPreview.builtinGroups).toContain("gitlab-context")
+        expect(platform.resourcesPreview.builtinGroups).toContain("test-platform-context")
         expect(web.resourcesPreview.mcp).toContain("enabled_server")
       },
     })

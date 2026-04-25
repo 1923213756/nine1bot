@@ -1,76 +1,84 @@
 import { describe, expect, test } from "bun:test"
 import path from "path"
-import { RuntimeGitLabPageAdapter } from "../../src/runtime/context/adapters/gitlab"
 import { RuntimeContextEvents } from "../../src/runtime/context/events"
+import { RuntimePlatformAdapterRegistry } from "../../src/runtime/platform/adapter"
 import { Instance } from "../../src/project/instance"
 import { Log } from "../../src/util/log"
 
 const projectRoot = path.join(__dirname, "../..")
 Log.init({ print: false })
 
-describe("GitLab page context adapter", () => {
-  test("parses GitLab repository, file, tree, merge request, and issue URLs", () => {
-    expect(RuntimeGitLabPageAdapter.parseGitLabUrl("https://gitlab.com/nine1/nine1bot")).toMatchObject({
-      host: "gitlab.com",
-      projectPath: "nine1/nine1bot",
-      pageType: "gitlab-repo",
-      objectKey: "gitlab.com:nine1/nine1bot:repo",
-      route: "repo",
+describe("platform page context registry", () => {
+  test("normalizes page payload and emits stable blocks through registered platform adapter", () => {
+    RuntimePlatformAdapterRegistry.clearForTesting()
+    RuntimePlatformAdapterRegistry.register({
+      id: "test-platform",
+      matchPage: (page) => page.platform === "test-platform",
+      normalizePage: (page) => ({
+        ...page,
+        pageType: "test-mr",
+        objectKey: "test-platform:project!42",
+      }),
+      blocksFromPage: (page, observedAt) => [
+        {
+          id: "platform:test-platform",
+          layer: "platform",
+          source: "page-context.test-platform",
+          content: `Platform: ${page.platform}`,
+          lifecycle: "turn",
+          visibility: "developer-toggle",
+          enabled: true,
+          priority: 65,
+          mergeKey: "test-platform:project!42",
+          observedAt,
+        },
+        {
+          id: "page:test-mr",
+          layer: "page",
+          source: "page-context.test-platform",
+          content: "Object key: test-platform:project!42",
+          lifecycle: "turn",
+          visibility: "developer-toggle",
+          enabled: true,
+          priority: 62,
+          mergeKey: "test-platform:project!42",
+          observedAt,
+        },
+      ],
     })
-    expect(RuntimeGitLabPageAdapter.parseGitLabUrl("https://gitlab.com/nine1/nine1bot/-/blob/main/src/index.ts")).toMatchObject({
-      pageType: "gitlab-file",
-      objectKey: "gitlab.com:nine1/nine1bot:file:main:src/index.ts",
-      ref: "main",
-      filePath: "src/index.ts",
-      route: "blob",
-    })
-    expect(RuntimeGitLabPageAdapter.parseGitLabUrl("https://gitlab.com/nine1/nine1bot/-/tree/main/packages")).toMatchObject({
-      pageType: "gitlab-repo",
-      objectKey: "gitlab.com:nine1/nine1bot:tree:main:packages",
-      ref: "main",
-      treePath: "packages",
-      route: "tree",
-    })
-    expect(RuntimeGitLabPageAdapter.parseGitLabUrl("https://gitlab.com/nine1/nine1bot/-/merge_requests/42")).toMatchObject({
-      pageType: "gitlab-mr",
-      objectKey: "gitlab.com:nine1/nine1bot:merge_request:42",
-      iid: "42",
-      route: "merge_request",
-    })
-    expect(RuntimeGitLabPageAdapter.parseGitLabUrl("https://gitlab.com/nine1/nine1bot/-/issues/7")).toMatchObject({
-      pageType: "gitlab-issue",
-      objectKey: "gitlab.com:nine1/nine1bot:issue:7",
-      iid: "7",
-      route: "issue",
-    })
-    expect(RuntimeGitLabPageAdapter.parseGitLabUrl("https://example.com/nine1/nine1bot/-/merge_requests/42")).toBeUndefined()
-  })
-
-  test("normalizes client payload and emits stable GitLab page blocks", () => {
     const payload = RuntimeContextEvents.normalizePagePayload({
-      platform: "generic-browser",
-      url: "https://gitlab.com/nine1/nine1bot/-/merge_requests/42",
+      platform: "test-platform",
+      url: "https://example.test/nine1/nine1bot/-/merge_requests/42",
       title: "Improve runtime",
       selection: "selected MR line",
       visibleSummary: "MR overview",
     })
 
     expect(payload).toMatchObject({
-      platform: "gitlab",
-      pageType: "gitlab-mr",
-      objectKey: "gitlab.com:nine1/nine1bot:merge_request:42",
+      platform: "test-platform",
+      pageType: "test-mr",
+      objectKey: "test-platform:project!42",
     })
 
     const blocks = RuntimeContextEvents.blocksFromPagePayload(payload, 1_000)
     expect(blocks.map((block) => block.id)).toEqual([
-      "platform:gitlab",
-      "page:gitlab-mr",
-      expect.stringMatching(/^page:browser-selection:/),
+      "platform:test-platform",
+      "page:test-mr",
     ])
-    expect(blocks[1]?.content).toEqual(expect.stringContaining("Object key: gitlab.com:nine1/nine1bot:merge_request:42"))
+    expect(blocks[1]?.content).toEqual(expect.stringContaining("Object key: test-platform:project!42"))
+    RuntimePlatformAdapterRegistry.clearForTesting()
   })
 
   test("deduplicates same-page events and records page transitions, content changes, and selection updates", async () => {
+    RuntimePlatformAdapterRegistry.clearForTesting()
+    RuntimePlatformAdapterRegistry.register({
+      id: "test-platform",
+      matchPage: (page) => page.platform === "test-platform",
+      normalizePage: (page) => ({
+        ...page,
+        objectKey: page.objectKey ?? page.url,
+      }),
+    })
     await Instance.provide({
       directory: projectRoot,
       fn: async () => {
@@ -79,15 +87,19 @@ describe("GitLab page context adapter", () => {
         await RuntimeContextEvents.removeAll({ sessionID, projectID })
 
         const repo = {
-          platform: "gitlab" as const,
-          url: "https://gitlab.com/nine1/nine1bot",
+          platform: "test-platform",
+          url: "https://example.test/nine1/nine1bot",
           title: "nine1bot",
+          pageType: "test-repo",
+          objectKey: "test-platform:repo",
           visibleSummary: "Repository overview",
         }
         const mr = {
-          platform: "gitlab" as const,
-          url: "https://gitlab.com/nine1/nine1bot/-/merge_requests/42",
+          platform: "test-platform",
+          url: "https://example.test/nine1/nine1bot/-/merge_requests/42",
           title: "Improve runtime",
+          pageType: "test-mr",
+          objectKey: "test-platform:mr:42",
           visibleSummary: "MR overview",
         }
 
@@ -125,11 +137,12 @@ describe("GitLab page context adapter", () => {
         })
         expect(selectedMr?.event?.type).toBe("selection-update")
         expect(selectedMr?.event?.blocks.map((block) => block.id)).toEqual([
-          expect.stringMatching(/^page:browser-selection:/),
+          expect.stringMatching(/^page:selection:/),
         ])
 
         await RuntimeContextEvents.removeAll({ sessionID, projectID })
       },
     })
+    RuntimePlatformAdapterRegistry.clearForTesting()
   })
 })

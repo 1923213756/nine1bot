@@ -1,5 +1,5 @@
 export interface RequestPagePayload {
-  platform: 'gitlab' | 'generic-browser' | 'feishu'
+  platform: string
   url?: string
   pageType?: string
   title?: string
@@ -48,7 +48,7 @@ function normalizePagePayload(input: unknown): RequestPagePayload | undefined {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined
   const payload = input as Record<string, unknown>
   const platform = payload.platform
-  if (platform !== 'gitlab' && platform !== 'generic-browser' && platform !== 'feishu') return undefined
+  if (typeof platform !== 'string' || !platform.trim()) return undefined
   return {
     platform,
     url: stringValue(payload.url),

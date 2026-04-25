@@ -17,7 +17,8 @@
 6. [运行时稳定性、能力协商与资源漂移](./06-runtime-stability-capability-drift.md)
 7. [Context Pipeline 实现设计](./07-context-pipeline-implementation-design.md)
 8. [Resource Resolver 实现设计](./08-resource-resolver-implementation-design.md)
-9. [Controller API 与 Runtime Event 协议](./11-controller-api-runtime-events.md)
+9. [Platform Adapter 边界与 GitLab 样板](./09-platform-adapter-boundary.md)
+10. [Controller API 与 Runtime Event 协议](./11-controller-api-runtime-events.md)
 
 ## 核心原则
 
@@ -27,6 +28,7 @@
 - context 通过 context blocks 和 context events 进入 runtime，并由 context pipeline 编译。
 - tools / MCP / skills 通过 resource resolver 解析，profileSnapshot 只声明资源身份，当前配置作为 live gate 控制实际可用性。
 - 权限、交互、文件、图片、预览、资源失败等能力通过 runtime event envelope 表达。
+- 第三方平台深度适配应放在 `packages/platform-*`，runtime core 只保留通用 registry / protocol / pipeline，不直接写 GitLab、Jira、GitHub 等平台语义。
 
 ## 不包含的内容
 
@@ -39,4 +41,3 @@
 - 性能基准记录
 
 这些内部文档仍保留在 `docs/agent-runtime-design/`，用于维护者追溯重构过程和实现细节。
-

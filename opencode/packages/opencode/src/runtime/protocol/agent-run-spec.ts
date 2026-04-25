@@ -76,7 +76,7 @@ export type SessionPermissionGrant = {
 
 export type EntrySpec = {
   source: "web" | "feishu" | "browser-extension" | "api"
-  platform?: "gitlab" | "generic-browser" | "feishu"
+  platform?: string
   mode?: string
   templateIds: string[]
   traceId?: string
@@ -245,7 +245,7 @@ export type TurnRuntimeSnapshot = {
     context?: {
       blocks?: ContextBlock[]
       page?: {
-        platform: "gitlab" | "generic-browser" | "feishu"
+        platform: string
         url?: string
         pageType?: string
         title?: string

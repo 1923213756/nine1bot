@@ -9,12 +9,12 @@
   ],
   "scripts": {
     "dev": "bun run --cwd opencode dev",
-    "build:web": "bun run --cwd web build",
+    "build:web": "web/node_modules/.bin/vue-tsc -b web/tsconfig.json && web/node_modules/.bin/vite build web --config web/vite.config.ts",
     "start": "bun run packages/nine1bot/src/index.ts",
     "serve": "bun run --cwd opencode/packages/opencode src/index.ts serve --port 4096",
     "web": "bun run --cwd web dev",
     "nine1bot": "bun run packages/nine1bot/src/index.ts",
-    "rebuild": "bun run --cwd web build",
+    "rebuild": "web/node_modules/.bin/vue-tsc -b web/tsconfig.json && web/node_modules/.bin/vite build web --config web/vite.config.ts",
     "dev:test": "bun run rebuild && bun run nine1bot"
   }
 }

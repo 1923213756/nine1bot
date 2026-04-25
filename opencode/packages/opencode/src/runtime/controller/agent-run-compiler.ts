@@ -161,6 +161,7 @@ export namespace ControllerAgentRunCompiler {
     return RuntimePromptBridgeCompiler.compileTurnSnapshot(spec, {
       messageID: input.body.messageID,
       tools: input.body.tools,
+      system: undefined,
       variant: input.body.variant,
       context: bridgeContext(spec, input.body),
     })

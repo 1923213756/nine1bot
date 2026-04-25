@@ -432,13 +432,13 @@ GitLab 是第一阶段最适合验证设计的外部平台。
 当用户在 GitLab repo 页面通过浏览器插件打开 Nine1Bot：
 
 1. 插件在发送请求时携带 URL、页面类型、可见标题、repo path、选区和必要 DOM 摘要。
-2. Controller 调用 GitLab adapter，把页面态解释成结构化 page context。
+2. Nine1Bot 产品层注册的 GitLab platform adapter 把页面态解释成结构化 page context。
 3. 后端在权限允许时补全稳定信息，例如默认分支、README、MR diff 摘要、issue 正文。
 4. Controller 判断 digest，如果页面状态与上一轮相同，不重复插入 context event。
 5. Controller 使用当前会话的 profileSnapshot 加上本轮 page context 编译 `AgentRunSpec`。
 6. Runtime 执行。
 
-此时模型能自然理解“用户正在看某个 GitLab 仓库或 MR”，但 Nine1Bot Runtime 不需要硬编码 GitLab 概念。
+此时模型能自然理解“用户正在看某个 GitLab 仓库或 MR”，但 Nine1Bot Runtime 不需要硬编码 GitLab 概念。GitLab 解析、模板和资源贡献应保留在 `packages/platform-gitlab`，runtime core 只通过通用 platform adapter registry 调用。
 
 ## 12. 渐进实施计划
 

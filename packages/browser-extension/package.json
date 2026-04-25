@@ -14,5 +14,7 @@
     "typescript": "^5.7.0",
     "vite": "^6.0.0"
   },
-  "dependencies": {}
+  "dependencies": {
+    "@nine1bot/platform-gitlab": "workspace:*"
+  }
 }

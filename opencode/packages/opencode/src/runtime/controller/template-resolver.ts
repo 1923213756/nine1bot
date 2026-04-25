@@ -11,6 +11,7 @@ import type {
 } from "@/runtime/protocol/agent-run-spec"
 import { RuntimeResourceResolver } from "@/runtime/resource/resolver"
 import { RuntimeControllerProtocol } from "@/runtime/controller/protocol"
+import { RuntimePlatformAdapterRegistry } from "@/runtime/platform/adapter"
 
 export namespace ControllerTemplateResolver {
   export type Input = {
@@ -176,12 +177,8 @@ export namespace ControllerTemplateResolver {
     if (!source || source === "web" || mode === "web-chat") ids.push("web-chat")
     if (source === "feishu" || platform === "feishu" || mode === "feishu-private-chat") ids.push("feishu-chat")
     if (source === "browser-extension" || mode === "browser-sidepanel") ids.push("browser-generic")
-    if (platform === "gitlab" || page?.platform === "gitlab") {
-      ids.push("browser-gitlab")
-      const pageType = normalizeTemplateId(page?.pageType)
-      if (pageType && pageType.startsWith("gitlab-")) ids.push(pageType)
-    }
     if (platform === "generic-browser") ids.push("browser-generic")
+    ids.push(...RuntimePlatformAdapterRegistry.inferTemplateIds({ entry: input.entry, page }))
     return ids
   }
 
@@ -243,46 +240,9 @@ export namespace ControllerTemplateResolver {
           }),
         )
       }
-      if (templateId === "browser-gitlab") {
-        blocks.push(
-          RuntimeContextPipeline.textBlock({
-            id: "template:browser-gitlab",
-            layer: "platform",
-            source: "template.browser-gitlab",
-            content: "This session can use GitLab browser context. Treat GitLab repository, file, merge request, and issue page events as active work context.",
-            lifecycle: "session",
-            visibility: "developer-toggle",
-            priority: 45,
-          }),
-        )
-      }
-      if (templateId.startsWith("gitlab-")) {
-        blocks.push(
-          RuntimeContextPipeline.textBlock({
-            id: `template:${templateId}`,
-            layer: "platform",
-            source: `template.${templateId}`,
-            content: renderGitLabTemplateContext(templateId, page),
-            lifecycle: "session",
-            visibility: "developer-toggle",
-            priority: 42,
-            mergeKey: page?.objectKey,
-          }),
-        )
-      }
     }
+    blocks.push(...RuntimePlatformAdapterRegistry.templateContextBlocks({ templateIds, page }))
     return dedupeBlocks(blocks)
-  }
-
-  function renderGitLabTemplateContext(templateId: string, page?: RuntimeContextEvents.RequestPagePayload) {
-    return [
-      `GitLab template: ${templateId}`,
-      page?.title ? `Initial page title: ${page.title}` : undefined,
-      page?.url ? `Initial page URL: ${page.url}` : undefined,
-      page?.objectKey ? `Initial object key: ${page.objectKey}` : undefined,
-    ]
-      .filter(Boolean)
-      .join("\n")
   }
 
   function resourcesForTemplates(templateIds: string[]) {
@@ -297,9 +257,13 @@ export namespace ControllerTemplateResolver {
       if (templateId === "browser-generic") {
         resources.builtinTools.enabledGroups = union(resources.builtinTools.enabledGroups, ["browser-context"])
       }
-      if (templateId === "browser-gitlab" || templateId.startsWith("gitlab-")) {
-        resources.builtinTools.enabledGroups = union(resources.builtinTools.enabledGroups, ["gitlab-context"])
-      }
+    }
+    for (const contribution of RuntimePlatformAdapterRegistry.resourceContributions({ templateIds })) {
+      resources.builtinTools.enabledGroups = union(resources.builtinTools.enabledGroups, contribution.builtinTools.enabledGroups)
+      resources.builtinTools.enabledTools = union(resources.builtinTools.enabledTools, contribution.builtinTools.enabledTools)
+      resources.mcp.servers = union(resources.mcp.servers, contribution.mcp.servers)
+      resources.mcp.tools = mergeMcpTools(resources.mcp.tools, contribution.mcp.tools)
+      resources.skills.skills = union(resources.skills.skills, contribution.skills.skills)
     }
     return resources
   }
@@ -342,9 +306,7 @@ export namespace ControllerTemplateResolver {
   }
 
   function recommendedAgent(templateIds: string[], fallback: string) {
-    if (templateIds.includes("gitlab-mr")) return fallback
-    if (templateIds.includes("gitlab-issue")) return fallback
-    return fallback
+    return RuntimePlatformAdapterRegistry.recommendedAgent({ templateIds, fallback })
   }
 
   function dedupeBlocks(blocks: ContextBlock[]) {

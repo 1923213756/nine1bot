@@ -3,6 +3,7 @@ import {
   normalizeRuntimeEventEnvelope,
   type RuntimeEventEnvelope,
 } from './runtime-events'
+import { gitLabTemplateIdsForPage } from '@nine1bot/platform-gitlab/browser'
 import type { RequestPagePayload } from './page-context'
 
 const BASE_URL = ''  // 使用相对路径，由 vite proxy 或同源处理
@@ -81,12 +82,7 @@ function controllerEntry(page?: RequestPagePayload) {
   }
 
   const templateIds = ['default-user-template', 'browser-generic']
-  if (page.platform === 'gitlab') {
-    templateIds.push('browser-gitlab')
-    if (page.pageType?.startsWith('gitlab-')) {
-      templateIds.push(page.pageType)
-    }
-  }
+  templateIds.push(...gitLabTemplateIdsForPage(page))
 
   return {
     source: 'browser-extension',
