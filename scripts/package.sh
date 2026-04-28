@@ -65,9 +65,15 @@ fi
 bun run build
 cd "$PROJECT_ROOT"
 
+BROWSER_EXTENSION_DIST="$PROJECT_ROOT/packages/browser-extension/dist"
+if [ ! -d "$BROWSER_EXTENSION_DIST" ] || [ -z "$(find "$BROWSER_EXTENSION_DIST" -mindepth 1 -print -quit)" ]; then
+    echo "ERROR: browser-extension/dist not found or empty after build. Check the browser extension build output path and build logs."
+    exit 1
+fi
+
 echo "Copying browser extension..."
 mkdir -p "$BUILD_DIR/browser-extension"
-cp -r "$PROJECT_ROOT/packages/browser-extension/dist/"* "$BUILD_DIR/browser-extension/"
+cp -r "$BROWSER_EXTENSION_DIST/"* "$BUILD_DIR/browser-extension/"
 
 # 4. 复制更新脚本
 echo "Copying update script..."

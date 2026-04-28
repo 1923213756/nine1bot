@@ -90,6 +90,9 @@ describe("tool.registry", () => {
 
         setBridgeServer({} as any)
         expect(await ToolRegistry.ids()).toContain("browser_status")
+
+        clearBridgeServer()
+        expect(await ToolRegistry.ids()).not.toContain("browser_status")
       },
     })
   })

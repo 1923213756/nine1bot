@@ -185,6 +185,7 @@ export async function startServer(options: StartServerOptions): Promise<ServerIn
   // 必须在 OpencodeServer.listen() 之前完成，因为路由在 listen 时挂载
   let bridgeServer: BridgeServer | undefined
   const browserConfig = (fullConfig as any).browser
+  clearBridgeServer()
   if (browserConfig?.enabled) {
     try {
       const serverOrigin = getBrowserServerOrigin(server.hostname, server.port)
