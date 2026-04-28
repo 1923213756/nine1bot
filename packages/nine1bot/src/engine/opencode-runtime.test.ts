@@ -41,6 +41,7 @@ describe('sanitizeOpencodeConfig', () => {
 
     expect(opencodeConfig).not.toHaveProperty('feishu')
     expect(opencodeConfig).not.toHaveProperty('browser')
+    expect(opencodeConfig).not.toHaveProperty('server')
     expect(opencodeConfig.provider.demo).toEqual({
       name: 'Demo',
       npm: '@ai-sdk/openai-compatible',

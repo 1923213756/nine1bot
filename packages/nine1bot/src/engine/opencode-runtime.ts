@@ -57,12 +57,7 @@ export function sanitizeOpencodeConfig(config: Nine1BotConfig): { config: Record
       continue
     }
 
-    if (key === 'server') {
-      const { openBrowser, ...rest } = value as any
-      if (Object.keys(rest).length > 0) {
-        opencodeConfig[key] = rest
-      }
-    } else if (key === 'mcp' && typeof value === 'object' && value !== null) {
+    if (key === 'mcp' && typeof value === 'object' && value !== null) {
       const { inheritOpencode, inheritClaudeCode, ...mcpServers } = value as any
       if (Object.keys(mcpServers).length > 0) {
         opencodeConfig[key] = mcpServers

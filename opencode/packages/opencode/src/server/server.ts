@@ -4,7 +4,7 @@ import { Log } from "../util/log"
 import * as nodePath from "path"
 import { fileURLToPath } from "url"
 import { describeRoute, generateSpecs, validator, resolver, openAPIRouteHandler } from "hono-openapi"
-import { Hono } from "hono"
+import { Hono, type Context } from "hono"
 import { cors } from "hono/cors"
 import { streamSSE } from "hono/streaming"
 import { proxy } from "hono/proxy"
@@ -36,7 +36,7 @@ import { lazy } from "../util/lazy"
 import { InstanceBootstrap } from "../project/bootstrap"
 import { Storage } from "../storage/storage"
 import type { ContentfulStatusCode } from "hono/utils/http-status"
-import { websocket } from "hono/bun"
+import { getConnInfo, websocket } from "hono/bun"
 import { HTTPException } from "hono/http-exception"
 import { errors } from "./error"
 import { QuestionRoutes } from "./routes/question"
@@ -69,19 +69,23 @@ export namespace Server {
     "/browser/extension",
   ])
 
-  export function isLocalBrowserRelayAuthBypass(path: string, hostHeader: string | undefined) {
-    if (!localBrowserRelayAuthBypassPaths.has(path.replace(/\/$/, ""))) return false
-    if (!hostHeader) return false
+  function isLoopbackAddress(address: string | undefined) {
+    if (!address) return false
+    const normalized = address.trim().toLowerCase()
+    return normalized === "127.0.0.1" || normalized === "::1" || normalized === "::ffff:127.0.0.1"
+  }
 
-    const host = hostHeader.trim().toLowerCase()
-    return (
-      host === "localhost" ||
-      host.startsWith("localhost:") ||
-      host === "127.0.0.1" ||
-      host.startsWith("127.0.0.1:") ||
-      host === "[::1]" ||
-      host.startsWith("[::1]:")
-    )
+  export function isLocalBrowserRelayAuthBypass(path: string, remoteAddress: string | undefined) {
+    if (!localBrowserRelayAuthBypassPaths.has(path.replace(/\/$/, ""))) return false
+    return isLoopbackAddress(remoteAddress)
+  }
+
+  function isLocalBrowserRelayRequest(c: Context) {
+    try {
+      return isLocalBrowserRelayAuthBypass(c.req.path, getConnInfo(c).remote.address)
+    } catch {
+      return false
+    }
   }
 
   export function url(): URL {
@@ -123,7 +127,7 @@ export namespace Server {
         .use(async (c, next) => {
           const password = Flag.OPENCODE_SERVER_PASSWORD
           if (!password) return next()
-          if (isLocalBrowserRelayAuthBypass(c.req.path, c.req.header("host"))) return next()
+          if (isLocalBrowserRelayRequest(c)) return next()
           const username = Flag.OPENCODE_SERVER_USERNAME ?? "opencode"
           try {
             return await basicAuth({ username, password })(c, next)

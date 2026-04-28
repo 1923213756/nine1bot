@@ -520,16 +520,16 @@ export function getExtensionRelay(): ExtensionRelay {
     getHello: () => (extensionHello ? { ...extensionHello } : null),
     getAgentStates: () => Array.from(extensionAgentStates.values()).map((state) => ({ ...state })),
     sendCommand: async (method: string, params?: unknown, targetId?: string) => {
+      if (!extensionWs || extensionWs.readyState !== 1) {
+        throw new Error('Chrome extension not connected')
+      }
+
       let sessionId: string | undefined
       if (targetId) {
         sessionId = findSessionIdForTarget(targetId)
         if (!sessionId) {
           throw new Error(`Browser target not found: ${targetId}`)
         }
-      }
-
-      if (!extensionWs || extensionWs.readyState !== 1) {
-        throw new Error('Chrome extension not connected')
       }
 
       const id = nextExtensionId++
