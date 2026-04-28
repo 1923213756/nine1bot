@@ -64,6 +64,26 @@ export namespace Server {
   let _corsWhitelist: string[] = []
   let _basicAuthFallbackLogged = false
 
+  const localBrowserRelayAuthBypassPaths = new Set([
+    "/browser/bootstrap",
+    "/browser/extension",
+  ])
+
+  export function isLocalBrowserRelayAuthBypass(path: string, hostHeader: string | undefined) {
+    if (!localBrowserRelayAuthBypassPaths.has(path.replace(/\/$/, ""))) return false
+    if (!hostHeader) return false
+
+    const host = hostHeader.trim().toLowerCase()
+    return (
+      host === "localhost" ||
+      host.startsWith("localhost:") ||
+      host === "127.0.0.1" ||
+      host.startsWith("127.0.0.1:") ||
+      host === "[::1]" ||
+      host.startsWith("[::1]:")
+    )
+  }
+
   export function url(): URL {
     return _url ?? new URL("http://localhost:4096")
   }
@@ -103,6 +123,7 @@ export namespace Server {
         .use(async (c, next) => {
           const password = Flag.OPENCODE_SERVER_PASSWORD
           if (!password) return next()
+          if (isLocalBrowserRelayAuthBypass(c.req.path, c.req.header("host"))) return next()
           const username = Flag.OPENCODE_SERVER_USERNAME ?? "opencode"
           try {
             return await basicAuth({ username, password })(c, next)

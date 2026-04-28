@@ -131,6 +131,15 @@ function validateExtensionToolIfPossible(cmd: { method: string; params?: unknown
   }
 }
 
+function findSessionIdForTarget(targetId: string): string | undefined {
+  for (const target of connectedTargets.values()) {
+    if (target.targetId === targetId) {
+      return target.sessionId
+    }
+  }
+  return undefined
+}
+
 async function routeCdpCommand(cmd: { id: number; method: string; params?: unknown; sessionId?: string }): Promise<unknown> {
   switch (cmd.method) {
     case 'Browser.getVersion':
@@ -162,16 +171,19 @@ async function routeCdpCommand(cmd: { id: number; method: string; params?: unkno
       const targetId = params.targetId
 
       if (targetId) {
-        for (const t of connectedTargets.values()) {
-          if (t.targetId === targetId) {
-            return { targetInfo: t.targetInfo }
-          }
+        const sessionId = findSessionIdForTarget(targetId)
+        if (!sessionId) {
+          throw new Error(`Browser target not found: ${targetId}`)
         }
+        return { targetInfo: connectedTargets.get(sessionId)!.targetInfo }
       }
 
-      if (cmd.sessionId && connectedTargets.has(cmd.sessionId)) {
+      if (cmd.sessionId) {
         const t = connectedTargets.get(cmd.sessionId)
-        if (t) return { targetInfo: t.targetInfo }
+        if (!t) {
+          throw new Error(`Browser session not found: ${cmd.sessionId}`)
+        }
+        return { targetInfo: t.targetInfo }
       }
 
       const first = Array.from(connectedTargets.values())[0]
@@ -184,17 +196,19 @@ async function routeCdpCommand(cmd: { id: number; method: string; params?: unkno
 
       if (!targetId) throw new Error('targetId required')
 
-      for (const t of connectedTargets.values()) {
-        if (t.targetId === targetId) {
-          return { sessionId: t.sessionId }
-        }
+      const sessionId = findSessionIdForTarget(targetId)
+      if (sessionId) {
+        return { sessionId }
       }
 
-      throw new Error('target not found')
+      throw new Error(`Browser target not found: ${targetId}`)
     }
 
     default: {
       validateExtensionToolIfPossible(cmd)
+      if (cmd.sessionId && !connectedTargets.has(cmd.sessionId)) {
+        throw new Error(`Browser session not found: ${cmd.sessionId}`)
+      }
 
       const id = nextExtensionId++
       return await sendToExtension({
@@ -506,18 +520,16 @@ export function getExtensionRelay(): ExtensionRelay {
     getHello: () => (extensionHello ? { ...extensionHello } : null),
     getAgentStates: () => Array.from(extensionAgentStates.values()).map((state) => ({ ...state })),
     sendCommand: async (method: string, params?: unknown, targetId?: string) => {
-      if (!extensionWs || extensionWs.readyState !== 1) {
-        throw new Error('Chrome extension not connected')
-      }
-
       let sessionId: string | undefined
       if (targetId) {
-        for (const target of connectedTargets.values()) {
-          if (target.targetId === targetId) {
-            sessionId = target.sessionId
-            break
-          }
+        sessionId = findSessionIdForTarget(targetId)
+        if (!sessionId) {
+          throw new Error(`Browser target not found: ${targetId}`)
         }
+      }
+
+      if (!extensionWs || extensionWs.readyState !== 1) {
+        throw new Error('Chrome extension not connected')
       }
 
       const id = nextExtensionId++

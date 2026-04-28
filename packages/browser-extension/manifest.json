@@ -9,11 +9,8 @@
     "scripting",
     "debugger",
     "storage",
-    "webNavigation",
     "tabGroups",
-    "sidePanel",
-    "offscreen",
-    "notifications"
+    "sidePanel"
   ],
   "host_permissions": [
     "<all_urls>"

@@ -1,11 +1,16 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import path from "path"
 import fs from "fs/promises"
 import { tmpdir } from "../fixture/fixture"
 import { Instance } from "../../src/project/instance"
 import { ToolRegistry } from "../../src/tool/registry"
+import { clearBridgeServer, setBridgeServer } from "../../src/browser/bridge"
 
 describe("tool.registry", () => {
+  afterEach(() => {
+    clearBridgeServer()
+  })
+
   test("loads tools from .opencode/tool (singular)", async () => {
     await using tmp = await tmpdir({
       init: async (dir) => {
@@ -70,6 +75,21 @@ describe("tool.registry", () => {
       fn: async () => {
         const ids = await ToolRegistry.ids()
         expect(ids).toContain("hello")
+      },
+    })
+  })
+
+  test("hides browser tools until the bridge is configured", async () => {
+    await using tmp = await tmpdir()
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        clearBridgeServer()
+        expect(await ToolRegistry.ids()).not.toContain("browser_status")
+
+        setBridgeServer({} as any)
+        expect(await ToolRegistry.ids()).toContain("browser_status")
       },
     })
   })

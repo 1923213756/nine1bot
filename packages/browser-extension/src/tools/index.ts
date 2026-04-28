@@ -1,6 +1,6 @@
 import type { ToolExecutionContext } from './execution-context'
 
-// Tool definitions for MCP Server
+// Tool definitions exposed through the built-in browser relay.
 
 export interface ToolDefinition {
   name: string

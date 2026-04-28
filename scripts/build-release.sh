@@ -86,6 +86,14 @@ check_dependencies() {
         cd "$PROJECT_ROOT"
     fi
 
+    # 检查浏览器扩展依赖；package.sh 会强制重新构建扩展
+    if [ ! -d "$PROJECT_ROOT/packages/browser-extension/node_modules" ]; then
+        echo "Installing browser extension dependencies..."
+        cd "$PROJECT_ROOT/packages/browser-extension"
+        bun install
+        cd "$PROJECT_ROOT"
+    fi
+
     echo "Dependencies OK"
 }
 
