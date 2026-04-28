@@ -31,6 +31,7 @@ export * from './dom-reader'
 export * from './interaction'
 export * from './form-input'
 export * from './tabs'
+export * from './locator'
 
 // Tool registry
 import { screenshotTool } from './screenshot'
@@ -39,6 +40,7 @@ import { readPageTool, getPageTextTool, findTool } from './dom-reader'
 import { computerTool } from './interaction'
 import { formInputTool } from './form-input'
 import { tabsContextTool, tabsCreateTool } from './tabs'
+import { locateTool } from './locator'
 
 export const tools: Record<string, ToolDefinition> = {
   screenshot: screenshotTool.definition,
@@ -50,6 +52,7 @@ export const tools: Record<string, ToolDefinition> = {
   form_input: formInputTool.definition,
   tabs_context_mcp: tabsContextTool.definition,
   tabs_create_mcp: tabsCreateTool.definition,
+  locate: locateTool.definition,
 }
 
 export const toolExecutors: Record<string, ToolExecutor> = {
@@ -62,4 +65,5 @@ export const toolExecutors: Record<string, ToolExecutor> = {
   form_input: formInputTool.execute,
   tabs_context_mcp: tabsContextTool.execute,
   tabs_create_mcp: tabsCreateTool.execute,
+  locate: locateTool.execute,
 }

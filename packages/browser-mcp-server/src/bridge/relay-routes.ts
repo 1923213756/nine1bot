@@ -527,7 +527,7 @@ export function getExtensionRelay(): ExtensionRelay {
       let sessionId: string | undefined
       if (targetId) {
         sessionId = findSessionIdForTarget(targetId)
-        if (!sessionId) {
+        if (!sessionId && !/^\d+$/.test(targetId)) {
           throw new Error(`Browser target not found: ${targetId}`)
         }
       }
@@ -536,7 +536,7 @@ export function getExtensionRelay(): ExtensionRelay {
       return await sendToExtension({
         id,
         method: 'forwardCDPCommand',
-        params: { method, params, sessionId },
+        params: { method, params, sessionId, targetId },
       })
     },
     stop: async () => {

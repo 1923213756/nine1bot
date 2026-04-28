@@ -14,3 +14,13 @@ export { buildSnapshotExpression, type SnapshotOptions } from './snapshot'
 export { buildFindExpression, type FindMatch } from './find'
 export { buildResolveRefExpression, buildScrollIntoViewExpression, type ResolvedElement } from './resolve-ref'
 export { buildFormFillExpression, type FormFillResult } from './form-fill'
+export {
+  buildLocateExpression,
+  buildResolveTargetExpression,
+  buildTargetFormFillExpression,
+  type LocateMatch,
+  type LocateOptions,
+  type LocateResult,
+  type ResolvedTarget,
+  type TargetFormFillResult,
+} from './locate'

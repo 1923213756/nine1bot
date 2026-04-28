@@ -89,7 +89,9 @@ describe("tool.registry", () => {
         expect(await ToolRegistry.ids()).not.toContain("browser_status")
 
         setBridgeServer({} as any)
-        expect(await ToolRegistry.ids()).toContain("browser_status")
+        const ids = await ToolRegistry.ids()
+        expect(ids).toContain("browser_status")
+        expect(ids).toContain("browser_locate")
 
         clearBridgeServer()
         expect(await ToolRegistry.ids()).not.toContain("browser_status")

@@ -42,6 +42,14 @@ import { buildSnapshotExpression } from '../core/page-scripts/snapshot'
 import { buildFindExpression, type FindMatch } from '../core/page-scripts/find'
 import { buildResolveRefExpression, buildScrollIntoViewExpression } from '../core/page-scripts/resolve-ref'
 import { buildFormFillExpression, type FormFillResult } from '../core/page-scripts/form-fill'
+import {
+  buildLocateExpression,
+  buildResolveTargetExpression,
+  buildTargetFormFillExpression,
+  type LocateOptions,
+  type LocateResult,
+  type TargetFormFillResult,
+} from '../core/page-scripts/locate'
 
 export interface BridgeServerOptions {
   cdpPort?: number
@@ -184,9 +192,10 @@ export class BridgeServer {
     // User browser (Extension)
     if (this.isExtensionConnected) {
       const targets = this.relay!.getTargets()
+      const refreshedTabs = await this.refreshExtensionTabs()
       userStatus = {
         connected: true,
-        tabs: targets.map(t => ({
+        tabs: refreshedTabs ?? targets.map(t => ({
           id: t.targetId,
           sessionId: t.sessionId,
           title: t.targetInfo.title,
@@ -220,6 +229,53 @@ export class BridgeServer {
       bot: botStatus,
       runtime: await this.getRuntimeStatus(),
     }
+  }
+
+  private async refreshExtensionTabs(): Promise<Tab[] | null> {
+    if (!this.relay?.extensionConnected()) return null
+    const supportedTools = this.relay.getTools()
+    if (supportedTools.length > 0 && !supportedTools.includes('tabs_context_mcp')) return null
+
+    try {
+      const result = await this.relay.sendCommand(
+        'Extension.callTool',
+        {
+          toolName: 'tabs_context_mcp',
+          args: { includeAll: true },
+          timeoutMs: 5000,
+          taskLabel: 'Refresh browser tabs',
+        },
+      ) as ExtensionToolResult
+      const text = result.content?.find(c => c.type === 'text')?.text ?? '{}'
+      const parsed = JSON.parse(text) as {
+        allTabs?: Array<{ id?: number; title?: string; url?: string; active?: boolean; windowId?: number }>
+        activeTab?: { id?: number; title?: string; url?: string; windowId?: number } | null
+      }
+      const allTabs = Array.isArray(parsed.allTabs) ? parsed.allTabs : []
+      if (allTabs.length > 0) {
+        return allTabs
+          .filter(tab => typeof tab.id === 'number')
+          .map(tab => ({
+            id: String(tab.id),
+            title: tab.title ?? '',
+            url: tab.url ?? '',
+            active: tab.active,
+            windowId: tab.windowId,
+          }))
+      }
+      if (parsed.activeTab?.id) {
+        return [{
+          id: String(parsed.activeTab.id),
+          title: parsed.activeTab.title ?? '',
+          url: parsed.activeTab.url ?? '',
+          active: true,
+          windowId: parsed.activeTab.windowId,
+        }]
+      }
+    } catch {
+      return null
+    }
+    return null
   }
 
   private async getRuntimeStatus(): Promise<BrowserRuntimeStatus> {
@@ -327,6 +383,8 @@ export class BridgeServer {
     const channel = this.getChannel(browser)
 
     if (channel === 'extension') {
+      const refreshedTabs = await this.refreshExtensionTabs()
+      if (refreshedTabs) return refreshedTabs
       const targets = this.relay!.getTargets()
       return targets.map(t => ({
         id: t.targetId,
@@ -352,7 +410,15 @@ export class BridgeServer {
    */
   async snapshot(
     tabId: string,
-    options?: { depth?: number; filter?: 'all' | 'interactive' | 'visible'; refId?: string; maxChars?: number },
+    options?: {
+      depth?: number
+      filter?: 'all' | 'interactive' | 'visible'
+      refId?: string
+      maxChars?: number
+      viewportOnly?: boolean
+      maxNodes?: number
+      includeShadow?: boolean
+    },
     browser?: BrowserTarget,
   ): Promise<SnapshotResult> {
     const channel = this.getChannel(browser)
@@ -368,6 +434,9 @@ export class BridgeServer {
         depth: options?.depth ?? 10,
         ref_id: options?.refId,
         max_chars: options?.maxChars ?? 50000,
+        viewportOnly: options?.viewportOnly,
+        maxNodes: options?.maxNodes,
+        includeShadow: options?.includeShadow,
       })
 
       const snapshotText = result.content?.find(c => c.type === 'text')?.text ?? ''
@@ -386,6 +455,9 @@ export class BridgeServer {
       filter: options?.filter,
       refId: options?.refId,
       maxChars: options?.maxChars,
+      viewportOnly: options?.viewportOnly,
+      maxNodes: options?.maxNodes,
+      includeShadow: options?.includeShadow,
     })
 
     const [snapshotJson, title, url] = await Promise.all([
@@ -401,31 +473,69 @@ export class BridgeServer {
     }
   }
 
+  // ==================== Locate Elements ====================
+
+  async locateElements(tabId: string, options: LocateOptions, browser?: BrowserTarget): Promise<LocateResult> {
+    const channel = this.getChannel(browser)
+    const expression = buildLocateExpression(options)
+    let resultJson: string
+
+    if (channel === 'extension') {
+      const result = await this.relay!.sendCommand('Runtime.evaluate', {
+        expression,
+        returnByValue: true,
+      }, tabId) as { result?: { value?: string } }
+      resultJson = String(result?.result?.value ?? '{}')
+    } else {
+      const wsUrl = await this.getTargetWsUrl(tabId)
+      resultJson = String(await evaluateScript(wsUrl, expression) ?? '{}')
+    }
+
+    try {
+      return JSON.parse(resultJson) as LocateResult
+    } catch {
+      return {
+        query: options.query,
+        matches: [],
+        scannedNodes: 0,
+        truncated: false,
+        elapsedMs: 0,
+        inaccessibleFrames: 0,
+        warnings: ['Failed to parse locator result.'],
+      }
+    }
+  }
+
   // ==================== Find Elements ====================
 
   async findElements(tabId: string, query: string, browser?: BrowserTarget): Promise<FindMatch[]> {
-    const channel = this.getChannel(browser)
-
-    if (channel === 'extension') {
-      const result = await this.callExtensionTool(tabId, 'find', { query })
-      const text = result.content?.find(c => c.type === 'text')?.text ?? '[]'
-      try {
-        const jsonStart = text.indexOf('[')
-        if (jsonStart === -1) return []
-        return JSON.parse(text.slice(jsonStart))
-      } catch {
-        return []
-      }
-    }
-
-    const wsUrl = await this.getTargetWsUrl(tabId)
-    const expression = buildFindExpression(query)
-    const resultJson = await evaluateScript(wsUrl, expression) as string
-    try {
-      return JSON.parse(String(resultJson ?? '[]'))
-    } catch {
-      return []
-    }
+    const result = await this.locateElements(
+      tabId,
+      {
+        query,
+        scope: 'auto',
+        visibleOnly: true,
+        viewportOnly: false,
+        maxResults: 20,
+        timeoutMs: 350,
+      },
+      browser,
+    )
+    return result.matches.map((match) => ({
+      ref: match.targetId,
+      targetId: match.targetId,
+      tag: match.tag,
+      text: match.text,
+      label: match.label,
+      role: match.role,
+      score: match.score,
+      rect: {
+        x: match.rect.x,
+        y: match.rect.y,
+        width: match.rect.width,
+        height: match.rect.height,
+      },
+    } as FindMatch & { targetId: string }))
   }
 
   // ==================== Click ====================
@@ -437,8 +547,20 @@ export class BridgeServer {
 
     let coords: [number, number] | undefined = options.coordinate
 
+    if (options.targetId && !coords) {
+      coords = await this.resolveTargetToCoords(tabId, options.targetId, channel)
+    }
+
     if (options.ref && !coords) {
-      coords = await this.resolveRefToCoords(tabId, options.ref, channel)
+      if (options.ref.startsWith('target_')) {
+        try {
+          coords = await this.resolveTargetToCoords(tabId, options.ref, channel)
+        } catch {
+          coords = await this.resolveRefToCoords(tabId, options.ref, channel)
+        }
+      } else {
+        coords = await this.resolveRefToCoords(tabId, options.ref, channel)
+      }
     }
 
     if (!coords) {
@@ -474,8 +596,38 @@ export class BridgeServer {
 
   // ==================== Form Fill ====================
 
-  async fillForm(tabId: string, ref: string, value: unknown, browser?: BrowserTarget): Promise<FormFillResult> {
+  async fillForm(
+    tabId: string,
+    ref: string | undefined,
+    value: unknown,
+    browser?: BrowserTarget,
+    targetId?: string,
+  ): Promise<FormFillResult | TargetFormFillResult> {
     const channel = this.getChannel(browser)
+
+    if (targetId) {
+      const expression = buildTargetFormFillExpression(targetId, value)
+      let resultJson: string
+      if (channel === 'extension') {
+        const result = await this.relay!.sendCommand('Runtime.evaluate', {
+          expression,
+          returnByValue: true,
+        }, tabId) as { result?: { value?: string } }
+        resultJson = String(result?.result?.value ?? '{}')
+      } else {
+        const wsUrl = await this.getTargetWsUrl(tabId)
+        resultJson = String(await evaluateScript(wsUrl, expression) ?? '{}')
+      }
+      try {
+        return JSON.parse(resultJson) as TargetFormFillResult
+      } catch {
+        return { success: false, error: 'Failed to parse target fill result' }
+      }
+    }
+
+    if (!ref) {
+      return { success: false, error: 'Either ref or targetId is required' }
+    }
 
     if (channel === 'extension') {
       const result = await this.callExtensionTool(tabId, 'form_input', { ref, value })
@@ -965,6 +1117,37 @@ export class BridgeServer {
    * Resolve a ref ID to center coordinates [x, y].
    * Scrolls element into view if not visible.
    */
+  private async resolveTargetToCoords(tabId: string, targetId: string, channel: 'extension' | 'cdp'): Promise<[number, number]> {
+    const expression = buildResolveTargetExpression(targetId, { scrollIntoView: true })
+    let resultJson: string
+
+    if (channel === 'extension') {
+      const result = await this.relay!.sendCommand('Runtime.evaluate', {
+        expression,
+        returnByValue: true,
+      }, tabId) as { result?: { value?: string } }
+      resultJson = String(result?.result?.value ?? 'null')
+    } else {
+      const wsUrl = await this.getTargetWsUrl(tabId)
+      resultJson = String(await evaluateScript(wsUrl, expression) ?? 'null')
+    }
+
+    const parsed = JSON.parse(resultJson) as {
+      found?: boolean
+      centerX?: number
+      centerY?: number
+      message?: string
+    } | null
+
+    if (!parsed || parsed.found === false) {
+      throw new Error(parsed?.message || `Target "${targetId}" not found`)
+    }
+    if (typeof parsed.centerX !== 'number' || typeof parsed.centerY !== 'number') {
+      throw new Error(parsed.message || `Target "${targetId}" did not resolve to valid coordinates`)
+    }
+    return [parsed.centerX, parsed.centerY]
+  }
+
   private async resolveRefToCoords(tabId: string, ref: string, channel: 'extension' | 'cdp'): Promise<[number, number]> {
     const expression = buildResolveRefExpression(ref)
 
@@ -1156,8 +1339,28 @@ export class BridgeServer {
       try {
         const tabId = c.req.param('targetId')
         const browser = c.req.query('browser') as BrowserTarget | undefined
-        const body = await c.req.json<{ depth?: number; filter?: 'all' | 'interactive' | 'visible'; refId?: string }>().catch(() => ({}))
+        const body = await c.req.json<{
+          depth?: number
+          filter?: 'all' | 'interactive' | 'visible'
+          refId?: string
+          viewportOnly?: boolean
+          maxNodes?: number
+          includeShadow?: boolean
+        }>().catch(() => ({}))
         const result = await this.snapshot(tabId, body, browser)
+        return c.json({ ok: true, ...result })
+      } catch (error) {
+        return c.json({ ok: false, error: String(error) }, 500)
+      }
+    })
+
+    app.post('/tabs/:targetId/locate', async (c) => {
+      try {
+        const tabId = c.req.param('targetId')
+        const browser = c.req.query('browser') as BrowserTarget | undefined
+        const body = await c.req.json<LocateOptions>().catch(() => ({ query: '' }))
+        if (!body.query) return c.json({ ok: false, error: 'query is required' }, 400)
+        const result = await this.locateElements(tabId, body, browser)
         return c.json({ ok: true, ...result })
       } catch (error) {
         return c.json({ ok: false, error: String(error) }, 500)
@@ -1217,9 +1420,9 @@ export class BridgeServer {
       try {
         const tabId = c.req.param('targetId')
         const browser = c.req.query('browser') as BrowserTarget | undefined
-        const { ref, value } = await c.req.json<{ ref: string; value: unknown }>()
-        if (!ref) return c.json({ ok: false, error: 'ref is required' }, 400)
-        const result = await this.fillForm(tabId, ref, value, browser)
+        const { ref, targetId, value } = await c.req.json<{ ref?: string; targetId?: string; value: unknown }>()
+        if (!ref && !targetId) return c.json({ ok: false, error: 'ref or targetId is required' }, 400)
+        const result = await this.fillForm(tabId, ref, value, browser, targetId)
         return c.json({ ok: true, ...result })
       } catch (error) {
         return c.json({ ok: false, error: String(error) }, 500)

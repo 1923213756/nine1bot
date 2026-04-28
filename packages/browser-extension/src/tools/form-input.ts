@@ -2,7 +2,8 @@ import type { ToolDefinition, ToolResult } from './index'
 
 interface FormInputArgs {
   tabId?: number
-  ref: string
+  ref?: string
+  targetId?: string
   value: unknown
 }
 
@@ -21,20 +22,24 @@ export const formInputTool = {
           type: 'string',
           description: 'The element reference ID from read_page or find tool.',
         },
+        targetId: {
+          type: 'string',
+          description: 'The stable target ID from locate tool.',
+        },
         value: {
           description: 'The value to set. Can be a string, number, boolean, or array (for multi-select).',
         },
       },
-      required: ['ref', 'value'],
+      required: ['value'],
     },
   } satisfies ToolDefinition,
 
   async execute(args: unknown): Promise<ToolResult> {
-    const { tabId, ref, value } = args as FormInputArgs
+    const { tabId, ref, targetId, value } = args as FormInputArgs
 
-    if (!ref) {
+    if (!ref && !targetId) {
       return {
-        content: [{ type: 'text', text: 'Error: ref is required' }],
+        content: [{ type: 'text', text: 'Error: ref or targetId is required' }],
         isError: true,
       }
     }
@@ -64,11 +69,16 @@ export const formInputTool = {
 
       const results = await chrome.scripting.executeScript({
         target: { tabId: targetTabId },
-        func: (refId, inputValue) => {
-          const element = document.querySelector(`[data-mcp-ref="${refId}"]`)
+        func: (refId?: string, stableTargetId?: string, inputValue?: unknown) => {
+          const locator = (window as typeof window & {
+            __nine1Locator?: { resolveElement?: (targetId: string) => Element | null }
+          }).__nine1Locator
+          const element = stableTargetId
+            ? locator?.resolveElement?.(stableTargetId) || document.querySelector(`[data-nine1-target-id="${stableTargetId}"]`)
+            : document.querySelector(`[data-mcp-ref="${refId}"]`)
 
           if (!element) {
-            return { success: false, error: `Element with ref "${refId}" not found` }
+            return { success: false, error: stableTargetId ? `Target "${stableTargetId}" not found` : `Element with ref "${refId}" not found` }
           }
 
           try {
@@ -123,7 +133,7 @@ export const formInputTool = {
             return { success: false, error: String(e) }
           }
         },
-        args: [ref, value],
+        args: [ref, targetId, value],
       })
 
       const result = results[0]?.result as { success: boolean; error?: string; elementType?: string; inputType?: string }

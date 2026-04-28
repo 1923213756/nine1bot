@@ -6,6 +6,9 @@ interface ReadPageArgs {
   filter?: 'all' | 'interactive' | 'visible'
   ref_id?: string
   max_chars?: number
+  viewportOnly?: boolean
+  maxNodes?: number
+  includeShadow?: boolean
 }
 
 interface GetPageTextArgs {
@@ -28,12 +31,22 @@ function generateRef(): string {
 // Inject content script function to read DOM
 async function readDOMFromTab(
   tabId: number,
-  options: { depth: number; filter: string; refId?: string; maxChars: number }
+  options: {
+    depth: number
+    filter: string
+    refId?: string
+    maxChars: number
+    viewportOnly?: boolean
+    maxNodes?: number
+    includeShadow?: boolean
+  }
 ): Promise<string> {
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func: (opts) => {
-      const { depth, filter, refId, maxChars } = opts
+      const { depth, filter, refId, maxChars, viewportOnly = false, maxNodes = 3000, includeShadow = false } = opts
+      let scannedNodes = 0
+      let truncatedByNodes = false
 
       function getAccessibilityInfo(element: Element): Record<string, unknown> | null {
         const tagName = element.tagName.toLowerCase()
@@ -124,14 +137,34 @@ async function readDOMFromTab(
         return true
       }
 
+      function isInViewport(element: Element): boolean {
+        const rect = element.getBoundingClientRect()
+        return rect.x < window.innerWidth && rect.y < window.innerHeight && rect.x + rect.width > 0 && rect.y + rect.height > 0
+      }
+
+      function getChildren(element: Element): Element[] {
+        const children = Array.from(element.children)
+        if (includeShadow && element.shadowRoot) children.push(...Array.from(element.shadowRoot.children))
+        if (includeShadow && element.tagName.toLowerCase() === 'slot') {
+          children.push(...(element as HTMLSlotElement).assignedElements({ flatten: true }))
+        }
+        return children
+      }
+
       function traverse(element: Element, currentDepth: number): Record<string, unknown> | null {
         if (currentDepth > depth) return null
+        if (scannedNodes >= maxNodes) {
+          truncatedByNodes = true
+          return null
+        }
+        scannedNodes++
 
         if (filter === 'visible' && !isVisible(element)) return null
+        if (viewportOnly && !isInViewport(element)) return null
         if (filter === 'interactive' && !isInteractive(element) && currentDepth > 0) {
           // Still traverse children for interactive filter
           const children: Array<Record<string, unknown>> = []
-          for (const child of element.children) {
+          for (const child of getChildren(element)) {
             const childInfo = traverse(child, currentDepth)
             if (childInfo) children.push(childInfo)
           }
@@ -144,7 +177,7 @@ async function readDOMFromTab(
 
         if (currentDepth < depth) {
           const children: Array<Record<string, unknown>> = []
-          for (const child of element.children) {
+          for (const child of getChildren(element)) {
             const childInfo = traverse(child, currentDepth + 1)
             if (childInfo) children.push(childInfo)
           }
@@ -163,11 +196,18 @@ async function readDOMFromTab(
       }
 
       const result = traverse(rootElement, 0)
+      if (result) {
+        result.scannedNodes = scannedNodes
+        if (truncatedByNodes) {
+          result.truncated = true
+          result.message = `Snapshot stopped at maxNodes=${maxNodes}. Use browser_locate for targeted element lookup.`
+        }
+      }
       const jsonString = JSON.stringify(result, null, 2)
 
       if (jsonString.length > maxChars) {
         return JSON.stringify({
-          error: `Output exceeds ${maxChars} characters. Please specify a smaller depth or focus on a specific element using ref_id.`,
+          error: `Output exceeds ${maxChars} characters. Use browser_locate for targeted lookup, or specify a smaller depth/maxNodes/viewportOnly/ref_id.`,
           truncated: true,
           actualLength: jsonString.length,
         })
@@ -210,6 +250,18 @@ export const readPageTool = {
           type: 'number',
           description: 'Maximum characters in output. Default is 50000.',
         },
+        viewportOnly: {
+          type: 'boolean',
+          description: 'Only include elements intersecting the current viewport.',
+        },
+        maxNodes: {
+          type: 'number',
+          description: 'Maximum nodes to scan before returning a partial snapshot. Default is 3000.',
+        },
+        includeShadow: {
+          type: 'boolean',
+          description: 'Include open Shadow DOM and slot-assigned elements.',
+        },
       },
       required: [],
     },
@@ -239,6 +291,9 @@ export const readPageTool = {
         filter,
         refId: ref_id,
         maxChars: max_chars,
+        viewportOnly: (args as ReadPageArgs)?.viewportOnly,
+        maxNodes: (args as ReadPageArgs)?.maxNodes,
+        includeShadow: (args as ReadPageArgs)?.includeShadow,
       })
 
       return {

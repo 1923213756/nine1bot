@@ -4,6 +4,7 @@ import { addTabToNine1Group } from '../background/tab-group-manager'
 interface TabsContextArgs {
   createIfEmpty?: boolean
   url?: string
+  includeAll?: boolean
 }
 
 interface TabsCreateArgs {
@@ -31,13 +32,17 @@ export const tabsContextTool = {
           type: 'boolean',
           description: 'If true and no tabs exist in the group, create a new tab.',
         },
+        includeAll: {
+          type: 'boolean',
+          description: 'If true, include all non-chrome tabs visible to the extension.',
+        },
       },
       required: [],
     },
   } satisfies ToolDefinition,
 
   async execute(args: unknown): Promise<ToolResult> {
-    const { createIfEmpty = false, url } = (args as TabsContextArgs) || {}
+    const { createIfEmpty = false, url, includeAll = false } = (args as TabsContextArgs) || {}
 
     try {
       // Clean up closed tabs from our tracking
@@ -111,6 +116,17 @@ export const tabsContextTool = {
               {
                 mcpTabs: managedTabs,
                 activeTab: activeTabInfo,
+                allTabs: includeAll
+                  ? allTabs
+                    .filter((tab) => tab.id && !tab.url?.startsWith('chrome://'))
+                    .map((tab) => ({
+                      id: tab.id,
+                      url: tab.url,
+                      title: tab.title,
+                      active: tab.active,
+                      windowId: tab.windowId,
+                    }))
+                  : undefined,
                 totalMcpTabs: managedTabs.length,
               },
               null,

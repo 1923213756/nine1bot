@@ -75,14 +75,78 @@ export namespace Server {
     return normalized === "127.0.0.1" || normalized === "::1" || normalized === "::ffff:127.0.0.1"
   }
 
-  export function isLocalBrowserRelayAuthBypass(path: string, remoteAddress: string | undefined) {
+  function normalizeForwardedAddress(address: string | undefined) {
+    if (!address) return undefined
+    let normalized = address.trim().toLowerCase()
+    if (!normalized || normalized === "unknown") return undefined
+
+    if (normalized.startsWith("\"") && normalized.endsWith("\"")) {
+      normalized = normalized.slice(1, -1).trim()
+    }
+
+    if (normalized.startsWith("[")) {
+      const end = normalized.indexOf("]")
+      if (end === -1) return normalized
+      return normalized.slice(1, end)
+    }
+
+    const colonCount = normalized.split(":").length - 1
+    if (colonCount === 1) {
+      const [host, port] = normalized.split(":")
+      if (port && /^\d+$/.test(port)) return host
+    }
+
+    return normalized
+  }
+
+  function getHeader(headers: Record<string, string | undefined>, name: string) {
+    return headers[name] ?? headers[name.toLowerCase()] ?? headers[name.toUpperCase()]
+  }
+
+  function getForwardedAddresses(headers: Record<string, string | undefined>) {
+    const addresses: string[] = []
+
+    const forwarded = getHeader(headers, "forwarded")
+    if (forwarded) {
+      for (const entry of forwarded.split(",")) {
+        for (const part of entry.split(";")) {
+          const [key, ...valueParts] = part.split("=")
+          if (key?.trim().toLowerCase() !== "for") continue
+          const normalized = normalizeForwardedAddress(valueParts.join("="))
+          if (normalized) addresses.push(normalized)
+        }
+      }
+    }
+
+    const xForwardedFor = getHeader(headers, "x-forwarded-for")
+    if (xForwardedFor) {
+      for (const entry of xForwardedFor.split(",")) {
+        const normalized = normalizeForwardedAddress(entry)
+        if (normalized) addresses.push(normalized)
+      }
+    }
+
+    return addresses
+  }
+
+  function hasOnlyLoopbackForwardedAddresses(headers: Record<string, string | undefined>) {
+    const forwardedAddresses = getForwardedAddresses(headers)
+    return forwardedAddresses.every((address) => isLoopbackAddress(address))
+  }
+
+  export function isLocalBrowserRelayAuthBypass(
+    path: string,
+    remoteAddress: string | undefined,
+    headers: Record<string, string | undefined> = {},
+  ) {
     if (!localBrowserRelayAuthBypassPaths.has(path.replace(/\/$/, ""))) return false
-    return isLoopbackAddress(remoteAddress)
+    if (!isLoopbackAddress(remoteAddress)) return false
+    return hasOnlyLoopbackForwardedAddresses(headers)
   }
 
   function isLocalBrowserRelayRequest(c: Context) {
     try {
-      return isLocalBrowserRelayAuthBypass(c.req.path, getConnInfo(c).remote.address)
+      return isLocalBrowserRelayAuthBypass(c.req.path, getConnInfo(c).remote.address, c.req.header())
     } catch {
       return false
     }
