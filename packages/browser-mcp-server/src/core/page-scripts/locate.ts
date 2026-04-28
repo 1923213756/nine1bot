@@ -509,6 +509,8 @@ export function buildLocateExpression(options: LocateOptions): string {
       }
       if (semanticDocs && /docs?|document|wiki|文档/.test(label + ' ' + text + ' ' + id + ' ' + className)) score += 20;
 
+      if (score === 0) return 0;
+
       if (info.interactive) score += 12;
       if (info.inViewport) score += 10;
       if (info.visible) score += 6;
@@ -523,26 +525,36 @@ export function buildLocateExpression(options: LocateOptions): string {
       info = (function() {
         var original = info;
         var rect = element.getBoundingClientRect();
+        var adjustedRect = {
+          x: Math.round(rect.x + entry.offsetX),
+          y: Math.round(rect.y + entry.offsetY),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height)
+        };
+        var view = element.ownerDocument && element.ownerDocument.defaultView ? element.ownerDocument.defaultView : window;
+        var style = view.getComputedStyle(element);
+        var visible = style.display !== 'none'
+          && style.visibility !== 'hidden'
+          && style.opacity !== '0'
+          && adjustedRect.width > 0
+          && adjustedRect.height > 0;
+        var vw = window.innerWidth || document.documentElement.clientWidth || 0;
+        var vh = window.innerHeight || document.documentElement.clientHeight || 0;
         return {
           tag: original.tag || element.tagName.toLowerCase(),
           role: original.role || '',
           label: original.label || '',
           text: original.text || '',
-          rect: {
-            x: Math.round(rect.x + entry.offsetX),
-            y: Math.round(rect.y + entry.offsetY),
-            width: Math.round(rect.width),
-            height: Math.round(rect.height)
-          },
+          rect: adjustedRect,
           center: {
-            x: Math.round(rect.x + entry.offsetX + rect.width / 2),
-            y: Math.round(rect.y + entry.offsetY + rect.height / 2)
+            x: Math.round(adjustedRect.x + adjustedRect.width / 2),
+            y: Math.round(adjustedRect.y + adjustedRect.height / 2)
           },
           selectorHint: original.selectorHint || '',
           shadowPath: entry.shadowPath || [],
           framePath: entry.framePath || [],
-          visible: original.visible,
-          inViewport: original.inViewport,
+          visible: visible,
+          inViewport: adjustedRect.x < vw && adjustedRect.y < vh && adjustedRect.x + adjustedRect.width > 0 && adjustedRect.y + adjustedRect.height > 0,
           interactive: original.interactive
         };
       })();

@@ -604,9 +604,10 @@ export class BridgeServer {
     targetId?: string,
   ): Promise<FormFillResult | TargetFormFillResult> {
     const channel = this.getChannel(browser)
+    const stableTargetId = targetId ?? (ref?.startsWith('target_') ? ref : undefined)
 
-    if (targetId) {
-      const expression = buildTargetFormFillExpression(targetId, value)
+    if (stableTargetId) {
+      const expression = buildTargetFormFillExpression(stableTargetId, value)
       let resultJson: string
       if (channel === 'extension') {
         const result = await this.relay!.sendCommand('Runtime.evaluate', {

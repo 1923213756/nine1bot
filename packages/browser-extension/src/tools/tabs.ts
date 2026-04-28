@@ -17,6 +17,16 @@ function normalizeNewTabUrl(url?: string): string {
   return trimmed.length > 0 ? trimmed : 'about:blank'
 }
 
+function isAutomatableTabUrl(url?: string): boolean {
+  if (!url) return false
+  try {
+    const parsed = new URL(url)
+    return ['http:', 'https:', 'file:'].includes(parsed.protocol)
+  } catch {
+    return false
+  }
+}
+
 // Track tabs created by this extension (MCP tab group)
 const mcpTabIds = new Set<number>()
 
@@ -34,7 +44,7 @@ export const tabsContextTool = {
         },
         includeAll: {
           type: 'boolean',
-          description: 'If true, include all non-chrome tabs visible to the extension.',
+          description: 'If true, include all automatable http/https/file tabs visible to the extension.',
         },
       },
       required: [],
@@ -118,7 +128,7 @@ export const tabsContextTool = {
                 activeTab: activeTabInfo,
                 allTabs: includeAll
                   ? allTabs
-                    .filter((tab) => tab.id && !tab.url?.startsWith('chrome://'))
+                    .filter((tab) => tab.id && isAutomatableTabUrl(tab.url))
                     .map((tab) => ({
                       id: tab.id,
                       url: tab.url,

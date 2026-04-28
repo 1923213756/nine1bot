@@ -13,6 +13,7 @@ class FakeElement {
   parentElement: FakeElement | null = null
   ownerDocument!: FakeDocument
   shadowRoot?: { children: FakeElement[] }
+  contentDocument?: FakeDocument
   attributes = new Map<string, string>()
   rect = { x: 0, y: 0, width: 100, height: 24 }
   style = { display: 'block', visibility: 'visible', opacity: '1', cursor: 'auto' }
@@ -163,5 +164,29 @@ describe('locate page script', () => {
     expect(result.truncated).toBe(true)
     expect(result.scannedNodes).toBe(1)
     expect(result.warnings[0]).toContain('budget')
+  })
+
+  test('applies iframe offsets before viewport filtering', () => {
+    const doc = new FakeDocument()
+    const iframe = new FakeElement('iframe')
+    iframe.ownerDocument = doc
+    iframe.rect = { x: 2000, y: 0, width: 400, height: 300 }
+
+    const frameDoc = new FakeDocument()
+    const button = new FakeElement('button')
+    button.ownerDocument = frameDoc
+    button.rect = { x: 10, y: 10, width: 100, height: 24 }
+    button.append(new FakeText('Inside frame'))
+    frameDoc.body.append(button)
+    iframe.contentDocument = frameDoc
+    doc.body.append(iframe)
+
+    const raw = runExpression(
+      buildLocateExpression({ query: 'Inside frame', viewportOnly: true, timeoutMs: 1000, maxNodes: 100 }),
+      doc,
+    )
+    const result = JSON.parse(raw)
+
+    expect(result.matches).toHaveLength(0)
   })
 })

@@ -149,7 +149,9 @@ function locateInPage(opts: Required<Omit<LocateArgs, 'tabId'>>): LocateResult {
     const visible = isVisible(element, rect)
     const visibleInViewport = inViewport(rect)
     const interactive = isInteractive(element)
-    if ((!opts.visibleOnly || visible) && (!opts.viewportOnly || visibleInViewport) && (opts.scope !== 'interactive' || interactive)) {
+    const requireViewport = opts.viewportOnly || opts.scope === 'viewport'
+    const requireInteractive = opts.scope === 'interactive'
+    if ((!opts.visibleOnly || visible) && (!requireViewport || visibleInViewport) && (!requireInteractive || interactive)) {
       const label = getLabel(element)
       const text = getText(element)
       const role = getRole(element)
@@ -159,6 +161,7 @@ function locateInPage(opts: Required<Omit<LocateArgs, 'tabId'>>): LocateResult {
       if (query && haystack.includes(query)) score += 60
       for (const word of words) if (haystack.includes(word)) score += 10
       if (semanticSearch && (tag === 'input' || tag === 'textarea' || /searchbox|textbox/.test(role) || haystack.includes('search'))) score += 45
+      if (score === 0) continue
       if (interactive) score += 12
       if (visibleInViewport) score += 10
       if (score > 0) {
