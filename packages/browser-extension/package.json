@@ -1,7 +1,7 @@
 {
   "name": "@nine1bot/browser-extension",
   "version": "0.1.0",
-  "description": "Nine1Bot Browser Control Extension - MCP Server for browser automation",
+  "description": "Nine1Bot Browser Control Extension - connects to the built-in /browser relay",
   "type": "module",
   "scripts": {
     "dev": "vite build --watch",

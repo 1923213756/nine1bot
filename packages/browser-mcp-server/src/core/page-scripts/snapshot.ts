@@ -15,6 +15,9 @@ export interface SnapshotOptions {
   filter?: 'all' | 'interactive' | 'visible'
   refId?: string
   maxChars?: number
+  viewportOnly?: boolean
+  maxNodes?: number
+  includeShadow?: boolean
 }
 
 /**
@@ -27,6 +30,9 @@ export function buildSnapshotExpression(opts: SnapshotOptions = {}): string {
     filter: opts.filter ?? 'all',
     refId: opts.refId,
     maxChars: opts.maxChars ?? 50000,
+    viewportOnly: opts.viewportOnly ?? false,
+    maxNodes: opts.maxNodes ?? 3000,
+    includeShadow: opts.includeShadow ?? false,
   }
 
   return `(function(opts) {
@@ -34,6 +40,11 @@ export function buildSnapshotExpression(opts: SnapshotOptions = {}): string {
     var filter = opts.filter;
     var refId = opts.refId;
     var maxChars = opts.maxChars;
+    var viewportOnly = opts.viewportOnly;
+    var maxNodes = opts.maxNodes;
+    var includeShadow = opts.includeShadow;
+    var scannedNodes = 0;
+    var truncatedByNodes = false;
 
     function getImplicitRole(tagName) {
       var roleMap = {
@@ -102,14 +113,39 @@ export function buildSnapshotExpression(opts: SnapshotOptions = {}): string {
       return true;
     }
 
+    function isInViewport(element) {
+      var rect = element.getBoundingClientRect();
+      return rect.x < window.innerWidth && rect.y < window.innerHeight && rect.x + rect.width > 0 && rect.y + rect.height > 0;
+    }
+
+    function getChildren(element) {
+      var children = [];
+      for (var i = 0; i < element.children.length; i++) children.push(element.children[i]);
+      if (includeShadow && element.shadowRoot) {
+        for (var j = 0; j < element.shadowRoot.children.length; j++) children.push(element.shadowRoot.children[j]);
+      }
+      if (includeShadow && element.tagName && element.tagName.toLowerCase() === 'slot' && typeof element.assignedElements === 'function') {
+        var assigned = element.assignedElements({ flatten: true });
+        for (var k = 0; k < assigned.length; k++) children.push(assigned[k]);
+      }
+      return children;
+    }
+
     function traverse(element, currentDepth) {
       if (currentDepth > depth) return null;
+      if (scannedNodes >= maxNodes) {
+        truncatedByNodes = true;
+        return null;
+      }
+      scannedNodes++;
 
       if (filter === 'visible' && !isVisible(element)) return null;
+      if (viewportOnly && !isInViewport(element)) return null;
       if (filter === 'interactive' && !isInteractive(element) && currentDepth > 0) {
         var children = [];
-        for (var i = 0; i < element.children.length; i++) {
-          var childInfo = traverse(element.children[i], currentDepth);
+        var interactiveChildren = getChildren(element);
+        for (var i = 0; i < interactiveChildren.length; i++) {
+          var childInfo = traverse(interactiveChildren[i], currentDepth);
           if (childInfo) children.push(childInfo);
         }
         if (children.length === 0) return null;
@@ -121,8 +157,9 @@ export function buildSnapshotExpression(opts: SnapshotOptions = {}): string {
 
       if (currentDepth < depth) {
         var ch = [];
-        for (var j = 0; j < element.children.length; j++) {
-          var ci = traverse(element.children[j], currentDepth + 1);
+        var childElements = getChildren(element);
+        for (var j = 0; j < childElements.length; j++) {
+          var ci = traverse(childElements[j], currentDepth + 1);
           if (ci) ch.push(ci);
         }
         if (ch.length > 0) info.children = ch;
@@ -140,11 +177,18 @@ export function buildSnapshotExpression(opts: SnapshotOptions = {}): string {
     }
 
     var result = traverse(rootElement, 0);
+    if (result && typeof result === 'object') {
+      result.scannedNodes = scannedNodes;
+      if (truncatedByNodes) {
+        result.truncated = true;
+        result.message = 'Snapshot stopped at maxNodes=' + maxNodes + '. Use browser_locate for targeted element lookup.';
+      }
+    }
     var jsonString = JSON.stringify(result, null, 2);
 
     if (jsonString.length > maxChars) {
       return JSON.stringify({
-        error: 'Output exceeds ' + maxChars + ' characters. Please specify a smaller depth or focus on a specific element using ref_id.',
+        error: 'Output exceeds ' + maxChars + ' characters. Use browser_locate for targeted lookup, or specify a smaller depth/maxNodes/viewportOnly/ref_id.',
         truncated: true,
         actualLength: jsonString.length,
       });

@@ -49,10 +49,12 @@ import {
   BrowserScrollTool,
   BrowserWaitTool,
   BrowserDialogTool,
+  BrowserLocateTool,
   BrowserFindTool,
   BrowserUploadTool,
   BrowserEvaluateTool,
 } from "./browser"
+import { getBridgeServer } from "../browser/bridge"
 
 export namespace ToolRegistry {
   const log = Log.create({ service: "tool.registry" })
@@ -123,6 +125,25 @@ export namespace ToolRegistry {
   async function all(): Promise<Tool.Info[]> {
     const custom = await state().then((x) => x.custom)
     const config = await Config.get()
+    const browserTools = getBridgeServer()
+      ? [
+        BrowserStatusTool,
+        BrowserLaunchTool,
+        BrowserSnapshotTool,
+        BrowserScreenshotTool,
+        BrowserNavigateTool,
+        BrowserClickTool,
+        BrowserFillTool,
+        BrowserPressKeyTool,
+        BrowserScrollTool,
+        BrowserWaitTool,
+        BrowserDialogTool,
+        BrowserLocateTool,
+        BrowserFindTool,
+        BrowserUploadTool,
+        BrowserEvaluateTool,
+      ]
+      : []
 
     return [
       InvalidTool,
@@ -152,20 +173,7 @@ export namespace ToolRegistry {
       ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [LspTool] : []),
       ...(config.experimental?.batch_tool === true ? [BatchTool] : []),
       ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [PlanExitTool, PlanEnterTool] : []),
-      BrowserStatusTool,
-      BrowserLaunchTool,
-      BrowserSnapshotTool,
-      BrowserScreenshotTool,
-      BrowserNavigateTool,
-      BrowserClickTool,
-      BrowserFillTool,
-      BrowserPressKeyTool,
-      BrowserScrollTool,
-      BrowserWaitTool,
-      BrowserDialogTool,
-      BrowserFindTool,
-      BrowserUploadTool,
-      BrowserEvaluateTool,
+      ...browserTools,
       ...custom,
     ]
   }

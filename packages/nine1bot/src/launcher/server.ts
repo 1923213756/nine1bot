@@ -1,10 +1,11 @@
 import { resolve, dirname, basename } from 'path'
 import { writeFile, mkdir } from 'fs/promises'
 import { tmpdir } from 'os'
-import type { ServerConfig, AuthConfig, Nine1BotConfig, CustomProvider } from '../config/schema'
+import type { ServerConfig, AuthConfig, Nine1BotConfig } from '../config/schema'
 import { getInstallDir, getGlobalSkillsDir, getAuthPath, getGlobalConfigDir, getMcpAuthPath, getProjectEnvDir } from '../config/loader'
 import { getGlobalPreferencesPath } from '../preferences'
 import { registerGitLabPlatformAdapter } from '../platform/gitlab'
+import { sanitizeOpencodeConfig } from '../engine/opencode-runtime'
 // 静态导入 OpenCode 服务器（编译时打包）
 import { Server as OpencodeServer } from '../../../../opencode/packages/opencode/src/server/server'
 import { BridgeServer } from '../../../browser-mcp-server/src/bridge/server'
@@ -74,91 +75,11 @@ function toOpencodeBridgeServer(bridge: BridgeServer): OpencodeBridgeServer {
 }
 
 /**
- * Nine1Bot 特有的配置字段（需要从 opencode 配置中过滤掉）
- */
-const NINE1BOT_ONLY_FIELDS = ['server', 'auth', 'tunnel', 'isolation', 'skills', 'sandbox', 'browser', 'feishu', 'customProviders']
-
-function protocolToNpm(protocol: CustomProvider['protocol']): string {
-  return protocol === 'anthropic' ? '@ai-sdk/anthropic' : '@ai-sdk/openai-compatible'
-}
-
-function mapCustomProvidersToOpencode(customProviders: Nine1BotConfig['customProviders']) {
-  const mapped: Record<string, any> = {}
-  for (const [providerId, provider] of Object.entries(customProviders || {})) {
-    mapped[providerId] = {
-      name: provider.name,
-      npm: protocolToNpm(provider.protocol),
-      api: provider.baseURL,
-      options: {
-        baseURL: provider.baseURL,
-        ...(provider.options || {}),
-      },
-      models: Object.fromEntries(
-        provider.models.map((model) => [
-          model.id,
-          {
-            id: model.id,
-            name: model.name || model.id,
-            provider: {
-              npm: protocolToNpm(provider.protocol),
-            },
-          },
-        ]),
-      ),
-    }
-  }
-  return mapped
-}
-
-/**
  * 生成 opencode 兼容的配置文件
  * 过滤掉 nine1bot 特有的字段
  */
 async function generateOpencodeConfig(config: Nine1BotConfig): Promise<string> {
-  const opencodeConfig: Record<string, any> = {}
-  const customProviders = mapCustomProvidersToOpencode(config.customProviders || {})
-
-  for (const [key, value] of Object.entries(config)) {
-    if (!NINE1BOT_ONLY_FIELDS.includes(key)) {
-      // 特殊处理 server 字段：只保留 opencode 认识的字段
-      if (key === 'server') {
-        const { openBrowser, ...rest } = value as any
-        if (Object.keys(rest).length > 0) {
-          opencodeConfig[key] = rest
-        }
-      }
-      // 特殊处理 mcp 字段：过滤掉 nine1bot 特有的继承控制字段
-      else if (key === 'mcp' && typeof value === 'object' && value !== null) {
-        const { inheritOpencode, inheritClaudeCode, ...mcpServers } = value as any
-        if (Object.keys(mcpServers).length > 0) {
-          opencodeConfig[key] = mcpServers
-        }
-      }
-      // 特殊处理 provider 字段：过滤掉 nine1bot 特有的继承控制字段
-      else if (key === 'provider' && typeof value === 'object' && value !== null) {
-        const { inheritOpencode, ...providers } = value as any
-        const sanitizedProviders = Object.fromEntries(
-          Object.entries(providers).map(([providerId, providerConfig]) => {
-            if (!providerConfig || typeof providerConfig !== 'object') {
-              return [providerId, providerConfig]
-            }
-
-            const { inheritOpencode: _ignored, ...rest } = providerConfig as Record<string, any>
-            return [providerId, rest]
-          }),
-        )
-
-        opencodeConfig[key] = { ...sanitizedProviders, ...customProviders }
-      }
-      else {
-        opencodeConfig[key] = value
-      }
-    }
-  }
-
-  if (!opencodeConfig.provider && Object.keys(customProviders).length > 0) {
-    opencodeConfig.provider = customProviders
-  }
+  const { config: opencodeConfig } = sanitizeOpencodeConfig(config)
 
   // 写入临时文件（设置安全权限，仅当前用户可读写）
   const tempDir = resolve(tmpdir(), 'nine1bot')
@@ -264,6 +185,7 @@ export async function startServer(options: StartServerOptions): Promise<ServerIn
   // 必须在 OpencodeServer.listen() 之前完成，因为路由在 listen 时挂载
   let bridgeServer: BridgeServer | undefined
   const browserConfig = (fullConfig as any).browser
+  clearBridgeServer()
   if (browserConfig?.enabled) {
     try {
       const serverOrigin = getBrowserServerOrigin(server.hostname, server.port)

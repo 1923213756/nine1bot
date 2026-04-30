@@ -4,7 +4,7 @@ import { Log } from "../util/log"
 import * as nodePath from "path"
 import { fileURLToPath } from "url"
 import { describeRoute, generateSpecs, validator, resolver, openAPIRouteHandler } from "hono-openapi"
-import { Hono } from "hono"
+import { Hono, type Context } from "hono"
 import { cors } from "hono/cors"
 import { streamSSE } from "hono/streaming"
 import { proxy } from "hono/proxy"
@@ -36,7 +36,7 @@ import { lazy } from "../util/lazy"
 import { InstanceBootstrap } from "../project/bootstrap"
 import { Storage } from "../storage/storage"
 import type { ContentfulStatusCode } from "hono/utils/http-status"
-import { websocket } from "hono/bun"
+import { getConnInfo, websocket } from "hono/bun"
 import { HTTPException } from "hono/http-exception"
 import { errors } from "./error"
 import { QuestionRoutes } from "./routes/question"
@@ -63,6 +63,99 @@ export namespace Server {
   let _url: URL | undefined
   let _corsWhitelist: string[] = []
   let _basicAuthFallbackLogged = false
+
+  const localBrowserRelayAuthBypassPaths = new Set([
+    "/browser/bootstrap",
+    "/browser/extension",
+  ])
+
+  function isLoopbackAddress(address: string | undefined) {
+    if (!address) return false
+    const normalized = address.trim().toLowerCase()
+    return normalized === "127.0.0.1" || normalized === "::1" || normalized === "::ffff:127.0.0.1"
+  }
+
+  function normalizeForwardedAddress(address: string | undefined) {
+    if (!address) return undefined
+    let normalized = address.trim().toLowerCase()
+    if (!normalized || normalized === "unknown") return undefined
+
+    if (normalized.startsWith("\"") && normalized.endsWith("\"")) {
+      normalized = normalized.slice(1, -1).trim()
+    }
+
+    if (normalized.startsWith("[")) {
+      const end = normalized.indexOf("]")
+      if (end === -1) return normalized
+      return normalized.slice(1, end)
+    }
+
+    const colonCount = normalized.split(":").length - 1
+    if (colonCount === 1) {
+      const [host, port] = normalized.split(":")
+      if (port && /^\d+$/.test(port)) return host
+    }
+
+    return normalized
+  }
+
+  function getHeader(headers: Record<string, string | undefined>, name: string) {
+    return headers[name] ?? headers[name.toLowerCase()] ?? headers[name.toUpperCase()]
+  }
+
+  function hasForwardedHeader(headers: Record<string, string | undefined>) {
+    return getHeader(headers, "forwarded") !== undefined || getHeader(headers, "x-forwarded-for") !== undefined
+  }
+
+  function getForwardedAddresses(headers: Record<string, string | undefined>) {
+    const addresses: string[] = []
+
+    const forwarded = getHeader(headers, "forwarded")
+    if (forwarded) {
+      for (const entry of forwarded.split(",")) {
+        for (const part of entry.split(";")) {
+          const [key, ...valueParts] = part.split("=")
+          if (key?.trim().toLowerCase() !== "for") continue
+          const normalized = normalizeForwardedAddress(valueParts.join("="))
+          if (normalized) addresses.push(normalized)
+        }
+      }
+    }
+
+    const xForwardedFor = getHeader(headers, "x-forwarded-for")
+    if (xForwardedFor) {
+      for (const entry of xForwardedFor.split(",")) {
+        const normalized = normalizeForwardedAddress(entry)
+        if (normalized) addresses.push(normalized)
+      }
+    }
+
+    return addresses
+  }
+
+  function hasOnlyLoopbackForwardedAddresses(headers: Record<string, string | undefined>) {
+    const forwardedAddresses = getForwardedAddresses(headers)
+    if (hasForwardedHeader(headers) && forwardedAddresses.length === 0) return false
+    return forwardedAddresses.every((address) => isLoopbackAddress(address))
+  }
+
+  export function isLocalBrowserRelayAuthBypass(
+    path: string,
+    remoteAddress: string | undefined,
+    headers: Record<string, string | undefined> = {},
+  ) {
+    if (!localBrowserRelayAuthBypassPaths.has(path.replace(/\/$/, ""))) return false
+    if (!isLoopbackAddress(remoteAddress)) return false
+    return hasOnlyLoopbackForwardedAddresses(headers)
+  }
+
+  function isLocalBrowserRelayRequest(c: Context) {
+    try {
+      return isLocalBrowserRelayAuthBypass(c.req.path, getConnInfo(c).remote.address, c.req.header())
+    } catch {
+      return false
+    }
+  }
 
   export function url(): URL {
     return _url ?? new URL("http://localhost:4096")
@@ -103,6 +196,7 @@ export namespace Server {
         .use(async (c, next) => {
           const password = Flag.OPENCODE_SERVER_PASSWORD
           if (!password) return next()
+          if (isLocalBrowserRelayRequest(c)) return next()
           const username = Flag.OPENCODE_SERVER_USERNAME ?? "opencode"
           try {
             return await basicAuth({ username, password })(c, next)

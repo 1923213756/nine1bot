@@ -50,6 +50,22 @@ describe('loadConfig remote MCP oauth support', () => {
 })
 
 describe('loadConfig browser migration guards', () => {
+  it('loads supported embedded browser config with defaults', async () => {
+    const configPath = await writeConfig({
+      browser: {
+        enabled: true,
+      },
+    })
+
+    const config = await loadConfig(configPath)
+    expect(config.browser).toEqual({
+      enabled: true,
+      cdpPort: 9222,
+      autoLaunch: true,
+      headless: false,
+    })
+  })
+
   it('rejects deprecated mcp.browser config', async () => {
     const configPath = await writeConfig({
       browser: { enabled: true },

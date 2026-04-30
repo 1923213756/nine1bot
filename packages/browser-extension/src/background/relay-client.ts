@@ -437,10 +437,10 @@ async function handleRelayMessage(data: string): Promise<void> {
   // 处理 CDP 命令转发请求
   if (message.method === 'forwardCDPCommand') {
     const { id } = message
-    const { method, params, sessionId } = message.params || {}
+    const { method, params, sessionId, targetId } = message.params || {}
 
     try {
-      const result = await handleCdpCommand(id, method, params, sessionId)
+      const result = await handleCdpCommand(id, method, params, sessionId, targetId)
       sendToRelay({ id, result })
     } catch (error) {
       sendToRelay({
@@ -455,10 +455,10 @@ async function handleRelayMessage(data: string): Promise<void> {
 /**
  * 处理 CDP 命令
  */
-async function handleCdpCommand(commandId: number, method: string, params: any, sessionId?: string): Promise<unknown> {
+async function handleCdpCommand(commandId: number, method: string, params: any, sessionId?: string, targetId?: string): Promise<unknown> {
   console.log('[Relay Client] Handling CDP command:', method, 'sessionId:', sessionId)
 
-  // 获取 tabId（从 sessionId 或使用当前活动标签）
+  // 获取 tabId：明确指定 sessionId 时必须命中，避免误操作当前活动标签。
   let tabId: number | undefined
 
   if (sessionId) {
@@ -469,9 +469,12 @@ async function handleCdpCommand(commandId: number, method: string, params: any, 
         break
       }
     }
-  }
-
-  if (!tabId) {
+    if (!tabId) {
+      throw new Error(`Browser session not found: ${sessionId}`)
+    }
+  } else if (typeof targetId === 'string' && /^\d+$/.test(targetId)) {
+    tabId = Number(targetId)
+  } else {
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
     tabId = activeTab?.id
   }

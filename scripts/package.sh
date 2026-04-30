@@ -56,14 +56,24 @@ else
     exit 1
 fi
 
-# 3.5 复制浏览器扩展
-echo "Copying browser extension..."
-if [ -d "$PROJECT_ROOT/packages/browser-extension/dist" ]; then
-    mkdir -p "$BUILD_DIR/browser-extension"
-    cp -r "$PROJECT_ROOT/packages/browser-extension/dist/"* "$BUILD_DIR/browser-extension/"
-else
-    echo "WARNING: browser-extension/dist not found. Skipping browser extension."
+# 3.5 构建并复制浏览器扩展
+echo "Building browser extension..."
+cd "$PROJECT_ROOT/packages/browser-extension"
+if [ ! -d "node_modules" ]; then
+    bun install
 fi
+bun run build
+cd "$PROJECT_ROOT"
+
+BROWSER_EXTENSION_DIST="$PROJECT_ROOT/packages/browser-extension/dist"
+if [ ! -d "$BROWSER_EXTENSION_DIST" ] || [ -z "$(find "$BROWSER_EXTENSION_DIST" -mindepth 1 -print -quit)" ]; then
+    echo "ERROR: browser-extension/dist not found or empty after build. Check the browser extension build output path and build logs."
+    exit 1
+fi
+
+echo "Copying browser extension..."
+mkdir -p "$BUILD_DIR/browser-extension"
+cp -r "$BROWSER_EXTENSION_DIST/"* "$BUILD_DIR/browser-extension/"
 
 # 4. 复制更新脚本
 echo "Copying update script..."

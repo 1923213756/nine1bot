@@ -47,8 +47,11 @@ Call this first to discover which browsers are available and get tab IDs.`,
       if (status.user.tabs.length > 0) {
         lines.push("  Tabs:")
         for (const tab of status.user.tabs) {
-          lines.push(`    [${tab.id}] ${tab.title}\n      ${tab.url}`)
+          const active = tab.active ? " (active)" : ""
+          lines.push(`    [${tab.id}]${active} ${tab.title}\n      ${tab.url}`)
         }
+      } else if (status.user.connected) {
+        lines.push("  Tabs: none reported yet (status refresh attempted)")
       }
     }
 
@@ -57,7 +60,8 @@ Call this first to discover which browsers are available and get tab IDs.`,
       if (status.bot.tabs.length > 0) {
         lines.push("  Tabs:")
         for (const tab of status.bot.tabs) {
-          lines.push(`    [${tab.id}] ${tab.title}\n      ${tab.url}`)
+          const active = tab.active ? " (active)" : ""
+          lines.push(`    [${tab.id}]${active} ${tab.title}\n      ${tab.url}`)
         }
       }
     }
@@ -134,13 +138,19 @@ Parameters:
 - tabId: Tab ID (from browser_status)
 - filter: "all" (default), "interactive" (buttons, inputs, links only), or "visible"
 - depth: Max traversal depth (default: 10)
-- refId: Focus on a specific element subtree by its ref ID`,
+- refId: Focus on a specific element subtree by its ref ID
+- viewportOnly: Only include elements intersecting the current viewport
+- maxNodes: Max nodes to scan before returning a partial snapshot
+- includeShadow: Include open Shadow DOM and slot-assigned elements`,
   parameters: z.object({
     tabId: z.string().describe("Tab ID to snapshot"),
     browser: browserParam,
     filter: z.enum(["all", "interactive", "visible"]).optional().describe("Element filter"),
     depth: z.number().optional().describe("Max depth (default: 10)"),
     refId: z.string().optional().describe("Focus on subtree of this ref"),
+    viewportOnly: z.boolean().optional().describe("Only include elements intersecting the current viewport"),
+    maxNodes: z.number().optional().describe("Maximum nodes to scan before returning a partial snapshot"),
+    includeShadow: z.boolean().optional().describe("Include open Shadow DOM and slot-assigned elements"),
   }),
   async execute(params, ctx) {
     await ctx.ask({
@@ -153,7 +163,14 @@ Parameters:
     const bridge = requireBridge()
     const result = await bridge.snapshot(
       params.tabId,
-      { filter: params.filter, depth: params.depth, refId: params.refId },
+      {
+        filter: params.filter,
+        depth: params.depth,
+        refId: params.refId,
+        viewportOnly: params.viewportOnly,
+        maxNodes: params.maxNodes,
+        includeShadow: params.includeShadow,
+      },
       params.browser as BrowserTarget | undefined,
     )
 
@@ -270,6 +287,7 @@ Use ref (from browser_snapshot) for precise targeting. Falls back to coordinate 
 Parameters:
 - tabId: Tab ID
 - ref: Element ref ID from snapshot (preferred)
+- targetId: Stable target ID from browser_locate
 - coordinate: [x, y] pixel position (fallback)
 - button: "left" (default), "right", "middle"
 - clickCount: 1 (default) or 2 for double-click`,
@@ -277,6 +295,7 @@ Parameters:
     tabId: z.string().describe("Tab ID"),
     browser: browserParam,
     ref: z.string().optional().describe("Element ref ID from snapshot"),
+    targetId: z.string().optional().describe("Stable target ID from browser_locate"),
     coordinate: z.tuple([z.number(), z.number()]).optional().describe("[x, y] pixel coordinates"),
     button: z.enum(["left", "right", "middle"]).optional().describe("Mouse button"),
     clickCount: z.number().optional().describe("Click count (2 for double-click)"),
@@ -294,6 +313,7 @@ Parameters:
       params.tabId,
       {
         ref: params.ref,
+        targetId: params.targetId,
         coordinate: params.coordinate,
         button: params.button,
         clickCount: params.clickCount,
@@ -301,7 +321,7 @@ Parameters:
       params.browser as BrowserTarget | undefined,
     )
 
-    const target = params.ref ? `ref=${params.ref}` : `(${params.coordinate?.join(", ")})`
+    const target = params.targetId ? `targetId=${params.targetId}` : params.ref ? `ref=${params.ref}` : `(${params.coordinate?.join(", ")})`
     return {
       title: `Clicked ${target}`,
       output: `Clicked ${target}`,
@@ -313,18 +333,20 @@ Parameters:
 // ==================== 7. browser_fill ====================
 
 export const BrowserFillTool = Tool.define("browser_fill", {
-  description: `Fill a form element (input, textarea, select, contenteditable) by ref ID.
+  description: `Fill a form element (input, textarea, select, contenteditable) by ref ID or target ID.
 
 Sets the value directly and dispatches input/change events. More reliable than typing for form fields.
 
 Parameters:
 - tabId: Tab ID
 - ref: Element ref ID from snapshot
+- targetId: Stable target ID from browser_locate
 - value: Value to set (string for text inputs, boolean for checkboxes, array for multi-select)`,
   parameters: z.object({
     tabId: z.string().describe("Tab ID"),
     browser: browserParam,
-    ref: z.string().describe("Element ref ID from snapshot"),
+    ref: z.string().optional().describe("Element ref ID from snapshot"),
+    targetId: z.string().optional().describe("Stable target ID from browser_locate"),
     value: z.union([z.string(), z.boolean(), z.array(z.string())]).describe("Value to fill"),
   }),
   async execute(params, ctx) {
@@ -332,8 +354,12 @@ Parameters:
       permission: "browser_fill",
       patterns: ["*"],
       always: ["*"],
-      metadata: { tabId: params.tabId, ref: params.ref },
+      metadata: { tabId: params.tabId, ref: params.ref, targetId: params.targetId },
     })
+
+    if (!params.ref && !params.targetId) {
+      throw new Error("Either ref or targetId is required")
+    }
 
     const bridge = requireBridge()
     const result = await bridge.fillForm(
@@ -341,6 +367,7 @@ Parameters:
       params.ref,
       params.value,
       params.browser as BrowserTarget | undefined,
+      params.targetId,
     )
 
     if (!result.success) {
@@ -348,7 +375,7 @@ Parameters:
     }
 
     return {
-      title: `Filled ${params.ref}`,
+      title: `Filled ${params.targetId ?? params.ref}`,
       output: `Set value on ${result.elementType ?? "element"}`,
       metadata: {},
     }
@@ -504,10 +531,88 @@ Parameters:
   },
 })
 
-// ==================== 12. browser_find ====================
+// ==================== 12. browser_locate ====================
+
+export const BrowserLocateTool = Tool.define("browser_locate", {
+  description: `Locate elements on complex SPA pages without relying on a full-page snapshot.
+
+This is the preferred locator for pages with React, Shadow DOM, virtualized lists, or huge DOM trees. It returns stable target IDs that can be passed to browser_click or browser_fill as targetId.
+
+Parameters:
+- tabId: Tab ID
+- query: Natural language query or text to find
+- scope: "auto" (default), "page", "viewport", or "interactive"
+- visibleOnly: Only return visible elements (default: true)
+- viewportOnly: Restrict to the current viewport (default: false)
+- maxResults: Max matches (default: 20)
+- timeoutMs: Page-side locator budget in ms (default: 350)`,
+  parameters: z.object({
+    tabId: z.string().describe("Tab ID"),
+    browser: browserParam,
+    query: z.string().describe("Natural language query or text to find"),
+    scope: z.enum(["auto", "page", "viewport", "interactive"]).optional().describe('Locator scope (default: "auto")'),
+    visibleOnly: z.boolean().optional().describe("Only return visible elements (default: true)"),
+    viewportOnly: z.boolean().optional().describe("Restrict to current viewport (default: false)"),
+    maxResults: z.number().optional().describe("Maximum results (default: 20)"),
+    timeoutMs: z.number().optional().describe("Locator time budget in ms (default: 350)"),
+  }),
+  async execute(params, ctx) {
+    await ctx.ask({
+      permission: "browser_locate",
+      patterns: ["*"],
+      always: ["*"],
+      metadata: { tabId: params.tabId, query: params.query },
+    })
+
+    const bridge = requireBridge()
+    const result = await bridge.locateElements(
+      params.tabId,
+      {
+        query: params.query,
+        scope: params.scope,
+        visibleOnly: params.visibleOnly,
+        viewportOnly: params.viewportOnly,
+        maxResults: params.maxResults,
+        timeoutMs: params.timeoutMs,
+      },
+      params.browser as BrowserTarget | undefined,
+    )
+
+    if (!result.matches || result.matches.length === 0) {
+      const warningText = result.warnings?.length ? `\nWarnings: ${result.warnings.join("; ")}` : ""
+      return {
+        title: "No matches",
+        output: `No elements located for "${params.query}". Scanned ${result.scannedNodes ?? 0} node(s) in ${result.elapsedMs ?? 0}ms.${warningText}`,
+        metadata: { matchCount: 0 },
+      }
+    }
+
+    const lines = result.matches.map((m: any, i: number) => {
+      const bits = [
+        `${i + 1}. [${m.targetId}] <${m.tag}>`,
+        m.role ? ` role=${m.role}` : "",
+        m.label ? ` label="${String(m.label).slice(0, 80)}"` : "",
+        ` score=${m.score}`,
+      ].join("")
+      const rect = m.rect ? `rect=(${m.rect.x}, ${m.rect.y}, ${m.rect.width}x${m.rect.height})` : "rect=(unknown)"
+      const text = m.text ? `Text: "${String(m.text).slice(0, 120)}"` : "(no text)"
+      const flags = `${m.inViewport ? "viewport" : "offscreen"}${m.interactive ? ", interactive" : ""}${m.shadowPath?.length ? ", shadow" : ""}`
+      return `${bits}\n   ${text}\n   ${rect}; ${flags}`
+    })
+    const warnings = result.warnings?.length ? `\n\nWarnings:\n${result.warnings.join("\n")}` : ""
+
+    return {
+      title: `Located ${result.matches.length} element(s)`,
+      output: `Located ${result.matches.length} element(s) for "${params.query}" in ${result.elapsedMs ?? 0}ms; scanned ${result.scannedNodes ?? 0} node(s):\n\n${lines.join("\n\n")}${warnings}`,
+      metadata: { matchCount: result.matches.length },
+    }
+  },
+})
+
+// ==================== 13. browser_find ====================
 
 export const BrowserFindTool = Tool.define("browser_find", {
-  description: `Find elements on the page using natural language. Returns matching elements with ref IDs, scored by relevance.
+  description: `Find elements on the page using natural language. Returns matching elements with stable target IDs, scored by relevance.
 
 Examples: "search bar", "login button", "submit", "email input"
 
@@ -544,7 +649,7 @@ Parameters:
 
     const lines = matches.map(
       (m: any, i: number) =>
-        `${i + 1}. [${m.ref}] <${m.tag}>${m.role ? ` role=${m.role}` : ""}${m.label ? ` label="${m.label}"` : ""}\n   ${m.text ? `Text: "${m.text.slice(0, 80)}"` : "(no text)"}   Score: ${m.score}`,
+        `${i + 1}. [${m.targetId ?? m.ref}] <${m.tag}>${m.role ? ` role=${m.role}` : ""}${m.label ? ` label="${m.label}"` : ""}\n   ${m.text ? `Text: "${m.text.slice(0, 80)}"` : "(no text)"}   Score: ${m.score}`,
     )
 
     return {

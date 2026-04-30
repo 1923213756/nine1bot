@@ -4,6 +4,7 @@ import { addTabToNine1Group } from '../background/tab-group-manager'
 interface TabsContextArgs {
   createIfEmpty?: boolean
   url?: string
+  includeAll?: boolean
 }
 
 interface TabsCreateArgs {
@@ -14,6 +15,16 @@ function normalizeNewTabUrl(url?: string): string {
   if (typeof url !== 'string') return 'about:blank'
   const trimmed = url.trim()
   return trimmed.length > 0 ? trimmed : 'about:blank'
+}
+
+function isAutomatableTabUrl(url?: string): boolean {
+  if (!url) return false
+  try {
+    const parsed = new URL(url)
+    return ['http:', 'https:', 'file:'].includes(parsed.protocol)
+  } catch {
+    return false
+  }
 }
 
 // Track tabs created by this extension (MCP tab group)
@@ -31,13 +42,21 @@ export const tabsContextTool = {
           type: 'boolean',
           description: 'If true and no tabs exist in the group, create a new tab.',
         },
+        url: {
+          type: 'string',
+          description: 'Optional URL to open when createIfEmpty creates a new tab.',
+        },
+        includeAll: {
+          type: 'boolean',
+          description: 'If true, include all automatable http/https/file tabs visible to the extension.',
+        },
       },
       required: [],
     },
   } satisfies ToolDefinition,
 
   async execute(args: unknown): Promise<ToolResult> {
-    const { createIfEmpty = false, url } = (args as TabsContextArgs) || {}
+    const { createIfEmpty = false, url, includeAll = false } = (args as TabsContextArgs) || {}
 
     try {
       // Clean up closed tabs from our tracking
@@ -111,6 +130,17 @@ export const tabsContextTool = {
               {
                 mcpTabs: managedTabs,
                 activeTab: activeTabInfo,
+                allTabs: includeAll
+                  ? allTabs
+                    .filter((tab) => tab.id && isAutomatableTabUrl(tab.url))
+                    .map((tab) => ({
+                      id: tab.id,
+                      url: tab.url,
+                      title: tab.title,
+                      active: tab.active,
+                      windowId: tab.windowId,
+                    }))
+                  : undefined,
                 totalMcpTabs: managedTabs.length,
               },
               null,

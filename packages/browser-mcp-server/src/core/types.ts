@@ -18,6 +18,8 @@ export interface Tab {
   title: string
   url: string
   sessionId?: string
+  active?: boolean
+  windowId?: number
 }
 
 export interface PageContent {
@@ -100,6 +102,7 @@ export interface SnapshotResult {
 /** Click options */
 export interface ClickOptions {
   ref?: string
+  targetId?: string
   coordinate?: [number, number]
   button?: 'left' | 'right' | 'middle'
   clickCount?: number
