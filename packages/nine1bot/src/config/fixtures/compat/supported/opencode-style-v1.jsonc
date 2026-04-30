@@ -1,0 +1,71 @@
+{
+  "isolation": {
+    "disableGlobalConfig": true,
+    "disableProjectConfig": true,
+    "inheritOpencode": false
+  },
+  "model": "openai/gpt-4.1",
+  "small_model": "openai/gpt-4.1-mini",
+  "default_agent": "coder",
+  "agent": {
+    "coder": {
+      "model": "openai/gpt-4.1",
+      "prompt": "Use the repository conventions and keep changes focused.",
+      "temperature": 0.2,
+      "mode": "primary"
+    }
+  },
+  "permission": {
+    "read": "allow",
+    "edit": {
+      "default": "ask",
+      "deny": ["**/.env"]
+    },
+    "bash": "ask",
+    "webfetch": "deny"
+  },
+  "instructions": [
+    "Prefer small, reviewable changes."
+  ],
+  "skills": {
+    "inheritOpencode": false,
+    "inheritClaudeCode": true
+  },
+  "mcp": {
+    "inheritOpencode": false,
+    "inheritClaudeCode": true,
+    "local_docs": {
+      "type": "local",
+      "command": ["node", "server.js"],
+      "enabled": false,
+      "environment": {
+        "DOCS_MODE": "offline"
+      }
+    }
+  },
+  "provider": {
+    "inheritOpencode": false,
+    "openai": {
+      "options": {
+        "apiKey": "{env:NINE1BOT_COMPAT_OPENAI_API_KEY:test-key}",
+        "timeout": false
+      },
+      "whitelist": ["gpt-4.1", "gpt-4.1-mini"]
+    }
+  },
+  "server": {
+    "openBrowser": false
+  },
+  "auth": {
+    "enabled": false
+  },
+  "tunnel": {
+    "enabled": false
+  },
+  "browser": {
+    "enabled": false
+  },
+  "feishu": {
+    "enabled": false
+  }
+}

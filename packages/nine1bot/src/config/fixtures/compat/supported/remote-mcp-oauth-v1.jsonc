@@ -1,0 +1,39 @@
+{
+  "isolation": {
+    "disableGlobalConfig": true,
+    "disableProjectConfig": true,
+    "inheritOpencode": false
+  },
+  "mcp": {
+    "inheritOpencode": false,
+    "remote_docs": {
+      "type": "remote",
+      "url": "https://mcp.example.com/http",
+      "enabled": true,
+      "oauth": {
+        "clientId": "client-id",
+        "clientSecret": "client-secret",
+        "scope": "read write"
+      },
+      "headers": {
+        "X-Test": "compat"
+      },
+      "timeout": 30000
+    }
+  },
+  "server": {
+    "openBrowser": false
+  },
+  "auth": {
+    "enabled": false
+  },
+  "tunnel": {
+    "enabled": false
+  },
+  "browser": {
+    "enabled": false
+  },
+  "feishu": {
+    "enabled": false
+  }
+}

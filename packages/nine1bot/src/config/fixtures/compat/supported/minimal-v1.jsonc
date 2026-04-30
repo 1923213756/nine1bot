@@ -1,0 +1,24 @@
+{
+  "isolation": {
+    "disableGlobalConfig": true,
+    "disableProjectConfig": true,
+    "inheritOpencode": false
+  },
+  "server": {
+    "port": 4107,
+    "hostname": "127.0.0.1",
+    "openBrowser": false
+  },
+  "auth": {
+    "enabled": false
+  },
+  "tunnel": {
+    "enabled": false
+  },
+  "browser": {
+    "enabled": false
+  },
+  "feishu": {
+    "enabled": false
+  }
+}

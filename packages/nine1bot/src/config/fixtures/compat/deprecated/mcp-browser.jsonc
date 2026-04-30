@@ -1,0 +1,15 @@
+{
+  "isolation": {
+    "disableGlobalConfig": true
+  },
+  "browser": {
+    "enabled": true
+  },
+  "mcp": {
+    "browser": {
+      "type": "local",
+      "enabled": true,
+      "command": ["node", "browser-mcp.js"]
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "isolation": {
+    "disableGlobalConfig": true
+  },
+  "browser": {
+    "enabled": true,
+    "bridgePort": 18793
+  }
+}

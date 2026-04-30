@@ -40,6 +40,9 @@ jobs:
         run: cd packages/nine1bot && bun run typecheck || echo "Typecheck completed with warnings"
         continue-on-error: true
 
+      - name: Test nine1bot
+        run: cd packages/nine1bot && bun test
+
   build:
     strategy:
       fail-fast: false

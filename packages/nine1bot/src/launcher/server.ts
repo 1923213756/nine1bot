@@ -9,7 +9,7 @@ import { registerGitLabPlatformAdapter } from '../platform/gitlab'
 import { Server as OpencodeServer } from '../../../../opencode/packages/opencode/src/server/server'
 import { BridgeServer } from '../../../browser-mcp-server/src/bridge/server'
 import type { BridgeServer as OpencodeBridgeServer } from '../../../../opencode/packages/opencode/src/browser/bridge'
-import { setBridgeServer } from '../../../../opencode/packages/opencode/src/browser/bridge'
+import { clearBridgeServer, setBridgeServer } from '../../../../opencode/packages/opencode/src/browser/bridge'
 
 /**
  * 判断是否是发行版模式
@@ -294,10 +294,27 @@ export async function startServer(options: StartServerOptions): Promise<ServerIn
     hostname: serverInstance.hostname ?? server.hostname,
     port: serverInstance.port ?? server.port,
     stop: async () => {
+      let stopError: unknown
+
       if (bridgeServer) {
-        try { await bridgeServer.stop() } catch { /* ignore */ }
+        try {
+          await bridgeServer.stop()
+        } catch (error) {
+          stopError = error
+        } finally {
+          clearBridgeServer()
+        }
       }
-      (serverInstance as any).server?.stop?.()
+
+      try {
+        await serverInstance.stop(true)
+      } catch (error) {
+        stopError ??= error
+      }
+
+      if (stopError) {
+        throw stopError
+      }
     },
   }
 }

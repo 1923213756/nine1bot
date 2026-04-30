@@ -33,6 +33,10 @@ export function setBridgeServer(bridge: BridgeServer): void {
   instance = bridge
 }
 
+export function clearBridgeServer(): void {
+  instance = null
+}
+
 export function getBridgeServer(): BridgeServer | null {
   return instance
 }

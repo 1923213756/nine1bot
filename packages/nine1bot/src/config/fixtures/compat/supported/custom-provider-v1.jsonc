@@ -1,0 +1,42 @@
+{
+  "isolation": {
+    "disableGlobalConfig": true,
+    "disableProjectConfig": true,
+    "inheritOpencode": false
+  },
+  "model": "compat-openai/compat-chat",
+  "customProviders": {
+    "compat-openai": {
+      "name": "Compat OpenAI",
+      "protocol": "openai",
+      "baseURL": "https://llm.example.com/v1",
+      "models": [
+        {
+          "id": "compat-chat",
+          "name": "Compat Chat"
+        }
+      ],
+      "options": {
+        "timeout": false,
+        "headers": {
+          "X-Compat": "true"
+        }
+      }
+    }
+  },
+  "server": {
+    "openBrowser": false
+  },
+  "auth": {
+    "enabled": false
+  },
+  "tunnel": {
+    "enabled": false
+  },
+  "browser": {
+    "enabled": false
+  },
+  "feishu": {
+    "enabled": false
+  }
+}
