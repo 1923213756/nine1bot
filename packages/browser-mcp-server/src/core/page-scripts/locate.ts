@@ -471,10 +471,54 @@ function __nine1EnsureLocatorRuntime() {
     return null;
   }
 
+  function getFrameOffset(element) {
+    var offsetX = 0;
+    var offsetY = 0;
+    var crossedFrame = false;
+    var view = element.ownerDocument && element.ownerDocument.defaultView ? element.ownerDocument.defaultView : null;
+    var guard = 0;
+    while (view && view !== window && guard++ < 20) {
+      var frameElement = null;
+      try { frameElement = view.frameElement; } catch {}
+      if (!frameElement || typeof frameElement.getBoundingClientRect !== 'function') break;
+      var frameRect = frameElement.getBoundingClientRect();
+      offsetX += frameRect.x;
+      offsetY += frameRect.y;
+      crossedFrame = true;
+      view = frameElement.ownerDocument && frameElement.ownerDocument.defaultView ? frameElement.ownerDocument.defaultView : null;
+    }
+    return { offsetX: offsetX, offsetY: offsetY, crossedFrame: crossedFrame };
+  }
+
+  function describeTarget(targetId, element) {
+    var descriptor = state.targets && state.targets[targetId];
+    var frameOffset = getFrameOffset(element);
+    if (frameOffset.crossedFrame) {
+      return describe(element, {
+        element: element,
+        offsetX: frameOffset.offsetX,
+        offsetY: frameOffset.offsetY,
+        shadowPath: descriptor && descriptor.shadowPath ? descriptor.shadowPath : [],
+        framePath: descriptor && descriptor.framePath ? descriptor.framePath : []
+      });
+    }
+
+    var info = describe(element, { element: element, offsetX: 0, offsetY: 0, shadowPath: [], framePath: [] });
+    if (descriptor && descriptor.framePath && descriptor.framePath.length > 0 && descriptor.rect && descriptor.center) {
+      info.rect = descriptor.rect;
+      info.center = descriptor.center;
+      info.shadowPath = descriptor.shadowPath || [];
+      info.framePath = descriptor.framePath || [];
+      info.inViewport = isInViewport(info.rect);
+    }
+    return info;
+  }
+
   state.resolveElement = resolveElement;
   state.describeElement = function(element) {
     return describe(element, { element: element, offsetX: 0, offsetY: 0, shadowPath: [], framePath: [] });
   };
+  state.describeTarget = describeTarget;
   state.scanElements = scanElements;
   state.remember = remember;
   state.normalize = normalize;
@@ -679,7 +723,7 @@ export function buildResolveTargetExpression(targetId: string, options: { scroll
     if (opts && opts.scrollIntoView && typeof element.scrollIntoView === 'function') {
       element.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
     }
-    var info = state.describeElement(element);
+    var info = state.describeTarget ? state.describeTarget(targetId, element) : state.describeElement(element);
     var result = {
       found: true,
       targetId: targetId,

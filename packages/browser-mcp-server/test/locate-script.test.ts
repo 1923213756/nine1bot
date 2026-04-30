@@ -191,6 +191,46 @@ describe('locate page script', () => {
     expect(result.matches).toHaveLength(0)
   })
 
+  test('resolves iframe targets with top-level coordinates', () => {
+    const doc = new FakeDocument()
+    const iframe = new FakeElement('iframe')
+    iframe.ownerDocument = doc
+    iframe.rect = { x: 200, y: 50, width: 400, height: 300 }
+
+    const frameDoc = new FakeDocument()
+    const button = new FakeElement('button')
+    button.ownerDocument = frameDoc
+    button.rect = { x: 10, y: 20, width: 100, height: 24 }
+    button.append(new FakeText('Inside frame'))
+    frameDoc.body.append(button)
+    frameDoc.defaultView = {
+      innerWidth: 400,
+      innerHeight: 300,
+      document: frameDoc,
+      frameElement: iframe,
+      CSS: { escape: (value: string) => value },
+      getComputedStyle: (element: FakeElement) => element.style,
+    }
+    iframe.contentDocument = frameDoc
+    doc.body.append(iframe)
+
+    const raw = runExpression(
+      buildLocateExpression({ query: 'Inside frame', timeoutMs: 1000, maxNodes: 100 }),
+      doc,
+    )
+    const result = JSON.parse(raw)
+
+    expect(result.matches.length).toBeGreaterThan(0)
+    expect(result.matches[0].tag).toBe('button')
+    expect(result.matches[0].center).toEqual({ x: 260, y: 82 })
+
+    const resolvedRaw = runExpression(buildResolveTargetExpression(result.matches[0].targetId), doc)
+    const resolved = JSON.parse(resolvedRaw)
+    expect(resolved.found).toBe(true)
+    expect(resolved.centerX).toBe(260)
+    expect(resolved.centerY).toBe(82)
+  })
+
   test('prunes disconnected locator targets on later locate calls', () => {
     const doc = new FakeDocument()
     const staleButton = new FakeElement('button')

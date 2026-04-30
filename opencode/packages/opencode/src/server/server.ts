@@ -103,6 +103,10 @@ export namespace Server {
     return headers[name] ?? headers[name.toLowerCase()] ?? headers[name.toUpperCase()]
   }
 
+  function hasForwardedHeader(headers: Record<string, string | undefined>) {
+    return getHeader(headers, "forwarded") !== undefined || getHeader(headers, "x-forwarded-for") !== undefined
+  }
+
   function getForwardedAddresses(headers: Record<string, string | undefined>) {
     const addresses: string[] = []
 
@@ -131,6 +135,7 @@ export namespace Server {
 
   function hasOnlyLoopbackForwardedAddresses(headers: Record<string, string | undefined>) {
     const forwardedAddresses = getForwardedAddresses(headers)
+    if (hasForwardedHeader(headers) && forwardedAddresses.length === 0) return false
     return forwardedAddresses.every((address) => isLoopbackAddress(address))
   }
 

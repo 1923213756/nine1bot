@@ -28,5 +28,14 @@ describe("browser relay auth boundary", () => {
     expect(Server.isLocalBrowserRelayAuthBypass("/browser/bootstrap", "127.0.0.1", {
       "x-forwarded-for": "127.0.0.1, 203.0.113.10",
     })).toBe(false)
+    expect(Server.isLocalBrowserRelayAuthBypass("/browser/bootstrap", "127.0.0.1", {
+      "x-forwarded-for": "unknown",
+    })).toBe(false)
+    expect(Server.isLocalBrowserRelayAuthBypass("/browser/bootstrap", "127.0.0.1", {
+      forwarded: "for=unknown;proto=https",
+    })).toBe(false)
+    expect(Server.isLocalBrowserRelayAuthBypass("/browser/bootstrap", "127.0.0.1", {
+      forwarded: "",
+    })).toBe(false)
   })
 })
