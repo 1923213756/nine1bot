@@ -76,6 +76,35 @@ function generateInstanceId(): string {
   return `browser_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
 }
 
+function defaultLocateResult(query: string, warnings: string[] = []): LocateResult {
+  return {
+    query,
+    matches: [],
+    scannedNodes: 0,
+    truncated: false,
+    elapsedMs: 0,
+    inaccessibleFrames: 0,
+    warnings,
+  }
+}
+
+function normalizeLocateResult(value: unknown, query: string): LocateResult {
+  if (!value || typeof value !== 'object' || !Array.isArray((value as Partial<LocateResult>).matches)) {
+    return defaultLocateResult(query, ['Locator returned an invalid result.'])
+  }
+
+  const result = value as Partial<LocateResult>
+  return {
+    query: typeof result.query === 'string' ? result.query : query,
+    matches: result.matches as LocateResult['matches'],
+    scannedNodes: typeof result.scannedNodes === 'number' ? result.scannedNodes : 0,
+    truncated: typeof result.truncated === 'boolean' ? result.truncated : false,
+    elapsedMs: typeof result.elapsedMs === 'number' ? result.elapsedMs : 0,
+    inaccessibleFrames: typeof result.inaccessibleFrames === 'number' ? result.inaccessibleFrames : 0,
+    warnings: Array.isArray(result.warnings) ? result.warnings : [],
+  }
+}
+
 async function isLocalPortListening(host: string, port: number): Promise<boolean> {
   return await new Promise((resolve) => {
     const socket = new Socket()
@@ -492,17 +521,9 @@ export class BridgeServer {
     }
 
     try {
-      return JSON.parse(resultJson) as LocateResult
+      return normalizeLocateResult(JSON.parse(resultJson), options.query)
     } catch {
-      return {
-        query: options.query,
-        matches: [],
-        scannedNodes: 0,
-        truncated: false,
-        elapsedMs: 0,
-        inaccessibleFrames: 0,
-        warnings: ['Failed to parse locator result.'],
-      }
+      return defaultLocateResult(options.query, ['Failed to parse locator result.'])
     }
   }
 
@@ -564,7 +585,7 @@ export class BridgeServer {
     }
 
     if (!coords) {
-      throw new Error('Either ref or coordinate is required for click')
+      throw new Error('Either targetId, ref, or coordinate is required for click')
     }
 
     const [x, y] = coords

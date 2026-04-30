@@ -42,6 +42,10 @@ export const tabsContextTool = {
           type: 'boolean',
           description: 'If true and no tabs exist in the group, create a new tab.',
         },
+        url: {
+          type: 'string',
+          description: 'Optional URL to open when createIfEmpty creates a new tab.',
+        },
         includeAll: {
           type: 'boolean',
           description: 'If true, include all automatable http/https/file tabs visible to the extension.',

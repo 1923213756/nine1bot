@@ -17,6 +17,7 @@ class FakeElement {
   attributes = new Map<string, string>()
   rect = { x: 0, y: 0, width: 100, height: 24 }
   style = { display: 'block', visibility: 'visible', opacity: '1', cursor: 'auto' }
+  connected = true
 
   constructor(public tagName: string) {
     this.tagName = tagName.toUpperCase()
@@ -35,7 +36,7 @@ class FakeElement {
   }
 
   get isConnected() {
-    return true
+    return this.connected
   }
 
   append(child: FakeElement | FakeText) {
@@ -188,5 +189,31 @@ describe('locate page script', () => {
     const result = JSON.parse(raw)
 
     expect(result.matches).toHaveLength(0)
+  })
+
+  test('prunes disconnected locator targets on later locate calls', () => {
+    const doc = new FakeDocument()
+    const staleButton = new FakeElement('button')
+    staleButton.ownerDocument = doc
+    staleButton.append(new FakeText('Stale action'))
+    doc.body.append(staleButton)
+
+    const firstRaw = runExpression(buildLocateExpression({ query: 'Stale action', timeoutMs: 1000, maxNodes: 100 }), doc)
+    const first = JSON.parse(firstRaw)
+    const staleTargetId = first.matches[0].targetId
+
+    doc.body.children = doc.body.children.filter((child) => child !== staleButton)
+    doc.body.childNodes = doc.body.childNodes.filter((child) => child !== staleButton)
+    staleButton.connected = false
+
+    const freshButton = new FakeElement('button')
+    freshButton.ownerDocument = doc
+    freshButton.append(new FakeText('Fresh action'))
+    doc.body.append(freshButton)
+
+    runExpression(buildLocateExpression({ query: 'Fresh action', timeoutMs: 1000, maxNodes: 100 }), doc)
+
+    expect(doc.defaultView.__nine1Locator.elements[staleTargetId]).toBeUndefined()
+    expect(doc.defaultView.__nine1Locator.targets[staleTargetId]).toBeUndefined()
   })
 })

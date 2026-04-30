@@ -68,6 +68,7 @@ export interface TargetFormFillResult {
 
 const LOCATOR_RUNTIME = String.raw`
 function __nine1EnsureLocatorRuntime() {
+  var MAX_LOCATOR_CACHE_ENTRIES = 500;
   var w = window;
   var state = w.__nine1Locator;
   if (!state) {
@@ -75,10 +76,12 @@ function __nine1EnsureLocatorRuntime() {
       next: 1,
       targets: {},
       elements: {},
+      order: [],
       weak: typeof WeakMap !== 'undefined' ? new WeakMap() : null
     };
     w.__nine1Locator = state;
   }
+  if (!state.order) state.order = Object.keys(state.targets || {});
 
   function cssEscape(value) {
     if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
@@ -398,13 +401,49 @@ function __nine1EnsureLocatorRuntime() {
     };
     state.targets[targetId] = descriptor;
     state.elements[targetId] = element;
+    markTargetRecent(targetId);
+    pruneLocatorCache(targetId);
     return targetId;
+  }
+
+  function forgetTarget(targetId) {
+    if (!targetId) return;
+    if (state.targets) delete state.targets[targetId];
+    if (state.elements) delete state.elements[targetId];
+  }
+
+  function markTargetRecent(targetId) {
+    var order = state.order || (state.order = []);
+    var index = order.indexOf(targetId);
+    if (index !== -1) order.splice(index, 1);
+    order.push(targetId);
+  }
+
+  function pruneLocatorCache(protectedTargetId) {
+    var order = state.order || (state.order = Object.keys(state.targets || {}));
+    for (var i = order.length - 1; i >= 0; i--) {
+      var targetId = order[i];
+      var element = state.elements && state.elements[targetId];
+      if (targetId !== protectedTargetId && element && !element.isConnected) {
+        forgetTarget(targetId);
+        order.splice(i, 1);
+      }
+    }
+    while (order.length > MAX_LOCATOR_CACHE_ENTRIES) {
+      var staleTargetId = order.shift();
+      if (staleTargetId === protectedTargetId) {
+        order.push(staleTargetId);
+        continue;
+      }
+      forgetTarget(staleTargetId);
+    }
   }
 
   function resolveElement(targetId) {
     if (!targetId) return null;
     var direct = state.elements && state.elements[targetId];
     if (direct && direct.isConnected) return direct;
+    if (direct && !direct.isConnected) delete state.elements[targetId];
     try {
       var byTarget = document.querySelector('[data-nine1-target-id="' + targetId + '"]');
       if (byTarget) return byTarget;

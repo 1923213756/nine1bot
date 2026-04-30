@@ -22,12 +22,14 @@ type LocateResult = {
 }
 
 function locateInPage(opts: Required<Omit<LocateArgs, 'tabId'>>): LocateResult {
+  const maxLocatorCacheEntries = 500
   const startedAt = Date.now()
   const rootWindow = window as typeof window & {
     __nine1Locator?: {
       next: number
       targets: Record<string, any>
       elements: Record<string, Element>
+      order?: string[]
       weak?: WeakMap<Element, string>
       resolveElement?: (targetId: string) => Element | null
     }
@@ -36,8 +38,10 @@ function locateInPage(opts: Required<Omit<LocateArgs, 'tabId'>>): LocateResult {
     next: 1,
     targets: {},
     elements: {},
+    order: [],
     weak: typeof WeakMap !== 'undefined' ? new WeakMap<Element, string>() : undefined,
   }
+  state.order ??= Object.keys(state.targets)
   rootWindow.__nine1Locator = state
 
   const normalize = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim().toLowerCase()
@@ -106,6 +110,36 @@ function locateInPage(opts: Required<Omit<LocateArgs, 'tabId'>>): LocateResult {
     const tabIndex = element.getAttribute('tabindex')
     return tabIndex !== null && tabIndex !== '-1'
   }
+  const forgetTarget = (targetId: string) => {
+    delete state.elements[targetId]
+    delete state.targets[targetId]
+  }
+  const markTargetRecent = (targetId: string) => {
+    const order = state.order ?? (state.order = [])
+    const index = order.indexOf(targetId)
+    if (index !== -1) order.splice(index, 1)
+    order.push(targetId)
+  }
+  const pruneLocatorCache = (protectedTargetId: string) => {
+    const order = state.order ?? (state.order = Object.keys(state.targets))
+    for (let index = order.length - 1; index >= 0; index--) {
+      const targetId = order[index]
+      const element = state.elements[targetId]
+      if (targetId !== protectedTargetId && element && !element.isConnected) {
+        forgetTarget(targetId)
+        order.splice(index, 1)
+      }
+    }
+    while (order.length > maxLocatorCacheEntries) {
+      const staleTargetId = order.shift()
+      if (!staleTargetId) break
+      if (staleTargetId === protectedTargetId) {
+        order.push(staleTargetId)
+        continue
+      }
+      forgetTarget(staleTargetId)
+    }
+  }
   const remember = (element: Element, info: Record<string, unknown>) => {
     let targetId = state.weak?.get(element) || element.getAttribute('data-nine1-target-id') || ''
     if (!targetId) {
@@ -115,11 +149,14 @@ function locateInPage(opts: Required<Omit<LocateArgs, 'tabId'>>): LocateResult {
     }
     state.elements[targetId] = element
     state.targets[targetId] = info
+    markTargetRecent(targetId)
+    pruneLocatorCache(targetId)
     return targetId
   }
   state.resolveElement = (targetId: string) => {
     const direct = state.elements[targetId]
     if (direct?.isConnected) return direct
+    if (direct && !direct.isConnected) delete state.elements[targetId]
     return document.querySelector(`[data-nine1-target-id="${targetId}"]`) || document.querySelector(`[data-mcp-ref="${targetId}"]`)
   }
 
