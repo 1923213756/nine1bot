@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue'
 import { useSession } from './composables/useSession'
 import { useFiles } from './composables/useFiles'
 import { useSettings } from './composables/useSettings'
@@ -26,6 +26,8 @@ import { useAgentTerminal } from './composables/useAgentTerminal'
 import { useFilePreview } from './composables/useFilePreview'
 
 import { MAX_PARALLEL_AGENTS } from './composables/useParallelSessions'
+
+const MetricsDashboard = defineAsyncComponent(() => import('./components/MetricsDashboard.vue'))
 
 const {
   sessions,
@@ -143,6 +145,7 @@ const showSearch = ref(false)
 
 // Projects page
 const showProjectsPage = ref(false)
+const showMetricsPage = ref(false)
 
 // Automations page
 const showAutomationsPage = ref(false)
@@ -179,7 +182,11 @@ const searchRecentSessions = computed(() => {
 
 // Empty state detection for centered layout
 const isEmptyState = computed(() =>
-  messages.value.length === 0 && !isLoading.value && !showProjectsPage.value && !showAutomationsPage.value
+  messages.value.length === 0 &&
+  !isLoading.value &&
+  !showProjectsPage.value &&
+  !showMetricsPage.value &&
+  !showAutomationsPage.value
 )
 
 // Handle model selection from InputBox
@@ -358,6 +365,9 @@ async function handleSend(content: string, files?: Array<{ type: 'file'; mime: s
   if (showProjectsPage.value) {
     showProjectsPage.value = false
   }
+  if (showMetricsPage.value) {
+    showMetricsPage.value = false
+  }
   if (showAutomationsPage.value) {
     showAutomationsPage.value = false
   }
@@ -383,6 +393,7 @@ async function ensureCurrentSessionId() {
 
 function handleNewSession() {
   showProjectsPage.value = false
+  showMetricsPage.value = false
   showAutomationsPage.value = false
   createSession(currentDirectory.value || '.')
 }
@@ -395,6 +406,7 @@ function toggleSidebar() {
 function handleSwitchMode(newMode: 'chat' | 'agent') {
   setAppMode(newMode)
   showProjectsPage.value = false
+  showMetricsPage.value = false
   showAutomationsPage.value = false
   createSession(currentDirectory.value || '.')
 }
@@ -405,6 +417,7 @@ async function handleSelectProject(projectId: string) {
     return
   }
 
+  showMetricsPage.value = false
   showAutomationsPage.value = false
   const project = await selectProject(projectId)
   if (!project) return
@@ -422,6 +435,7 @@ async function handleSelectProject(projectId: string) {
 }
 
 function handleOpenProjects() {
+  showMetricsPage.value = false
   showProjectsPage.value = true
   showAutomationsPage.value = false
   loadProjects().catch((error) => {
@@ -432,9 +446,42 @@ function handleOpenProjects() {
 function handleOpenAutomations() {
   showAutomationsPage.value = true
   showProjectsPage.value = false
+  showMetricsPage.value = false
   loadProjects().catch((error) => {
     console.error('Failed to load projects:', error)
   })
+}
+
+function handleOpenMetrics() {
+  showProjectsPage.value = false
+  showAutomationsPage.value = false
+  showMetricsPage.value = true
+}
+
+function handleToggleMetrics() {
+  showProjectsPage.value = false
+  showAutomationsPage.value = false
+  showMetricsPage.value = !showMetricsPage.value
+}
+
+async function handleOpenMetricsSession(sessionId: string) {
+  let session =
+    sidebarSessions.value.find((item) => item.id === sessionId) ||
+    sessions.value.find((item) => item.id === sessionId)
+
+  if (!session) {
+    await loadSessions()
+    session =
+      sidebarSessions.value.find((item) => item.id === sessionId) ||
+      sessions.value.find((item) => item.id === sessionId)
+  }
+
+  if (!session) return
+
+  showProjectsPage.value = false
+  showMetricsPage.value = false
+  showAutomationsPage.value = false
+  await selectSession(session)
 }
 
 async function handleCreateProject(name: string, instructions: string, directory?: string) {
@@ -467,6 +514,7 @@ async function handleUpdateProject(projectId: string, updates: { name?: string; 
 function handleSearchSelect(sessionId: string) {
   showSearch.value = false
   showProjectsPage.value = false
+  showMetricsPage.value = false
   showAutomationsPage.value = false
   const session = searchRecentSessions.value.find(s => s.id === sessionId) || sessions.value.find(s => s.id === sessionId)
   if (session) {
@@ -478,6 +526,7 @@ function handleProjectNewSession(projectId: string) {
   const project = getProject(projectId)
   if (!project) return
   showProjectsPage.value = false
+  showMetricsPage.value = false
   showAutomationsPage.value = false
   createSession(project.rootDirectory || project.worktree)
 }
@@ -489,18 +538,21 @@ async function handleDeleteProject(projectId: string) {
 
 async function handleProjectSelectSession(session: Session) {
   showProjectsPage.value = false
+  showMetricsPage.value = false
   showAutomationsPage.value = false
   await selectSession(session)
 }
 
 async function handleSidebarSelectSession(session: Session) {
   showProjectsPage.value = false
+  showMetricsPage.value = false
   showAutomationsPage.value = false
   await selectSession(session)
 }
 
 async function handleAutomationSelectSession(session: Session) {
   showProjectsPage.value = false
+  showMetricsPage.value = false
   showAutomationsPage.value = false
   await selectSession(session)
 }
@@ -607,7 +659,7 @@ function handlePromptSelect(prompt: string) {
       :isSessionRunning="isSessionRunning"
       :runningCount="runningCount"
       :maxParallelAgents="MAX_PARALLEL_AGENTS"
-      :activePage="showAutomationsPage ? 'automations' : showProjectsPage ? 'projects' : 'chat'"
+      :activePage="showMetricsPage ? 'metrics' : showAutomationsPage ? 'automations' : showProjectsPage ? 'projects' : 'chat'"
       @toggle-collapse="toggleSidebar"
       @select-session="handleSidebarSelectSession"
       @new-session="handleNewSession"
@@ -622,6 +674,7 @@ function handlePromptSelect(prompt: string) {
       @switch-mode="handleSwitchMode"
       @select-project="handleSelectProject"
       @open-projects="handleOpenProjects"
+      @open-metrics="handleOpenMetrics"
       @open-automations="handleOpenAutomations"
     />
 
@@ -634,8 +687,10 @@ function handlePromptSelect(prompt: string) {
         :sidebarCollapsed="sidebarCollapsed"
         :isSummarizing="isSummarizing"
         :retryInfo="retryInfo"
+        :showMetrics="showMetricsPage"
         @toggle-sidebar="toggleSidebar"
         @abort="abortCurrentSession"
+        @toggle-metrics="handleToggleMetrics"
       />
 
       <!-- Chat Area -->
@@ -662,6 +717,12 @@ function handlePromptSelect(prompt: string) {
           @rename-session="handleRenameSession"
           @delete-session="handleDeleteSession"
           @close="showProjectsPage = false"
+        />
+
+        <MetricsDashboard
+          v-else-if="showMetricsPage"
+          :visible="showMetricsPage"
+          @open-session="handleOpenMetricsSession"
         />
 
         <!-- Empty State: Centered greeting + input + prompts -->

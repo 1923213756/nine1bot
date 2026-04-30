@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 import {
   PanelLeftClose, PanelLeft, MessageSquare, Plus, Search,
   FolderOpen, Code2, Sparkles, Pencil, Trash2, X, Check,
-  Loader2, Square, ChevronRight, User, MessageCircle, EllipsisVertical, Webhook
+  Loader2, Square, ChevronRight, User, MessageCircle, EllipsisVertical, BarChart3, Webhook
 } from 'lucide-vue-next'
 import type { Session, FileItem } from '../api/client'
 import type { AppMode } from '../composables/useAppMode'
@@ -45,7 +45,7 @@ const props = defineProps<{
   isSessionRunning: (sessionId: string) => boolean
   runningCount: number
   maxParallelAgents: number
-  activePage: 'chat' | 'projects' | 'automations'
+  activePage: 'chat' | 'projects' | 'metrics' | 'automations'
 }>()
 
 const emit = defineEmits<{
@@ -63,6 +63,7 @@ const emit = defineEmits<{
   'switch-mode': [mode: AppMode]
   'select-project': [projectId: string]
   'open-projects': []
+  'open-metrics': []
   'open-automations': []
 }>()
 
@@ -196,6 +197,10 @@ function contextMenuDelete() {
         <FolderOpen :size="18" />
         <span>Projects</span>
       </button>
+      <button class="nav-item" :class="{ active: activePage === 'metrics' }" @click="emit('open-metrics')">
+        <BarChart3 :size="18" />
+        <span>Metrics</span>
+      </button>
       <button class="nav-item" :class="{ active: activePage === 'automations' }" @click="emit('open-automations')">
         <Webhook :size="18" />
         <span>Automations</span>
@@ -212,6 +217,9 @@ function contextMenuDelete() {
       </button>
       <button class="nav-item-icon" :class="{ active: activePage === 'projects' }" @click="emit('open-projects')" title="Projects">
         <FolderOpen :size="18" />
+      </button>
+      <button class="nav-item-icon" :class="{ active: activePage === 'metrics' }" @click="emit('open-metrics')" title="Metrics">
+        <BarChart3 :size="18" />
       </button>
       <button class="nav-item-icon" :class="{ active: activePage === 'automations' }" @click="emit('open-automations')" title="Automations">
         <Webhook :size="18" />
