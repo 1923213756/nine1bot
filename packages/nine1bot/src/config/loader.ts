@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import { Nine1BotConfigSchema, type Nine1BotConfig } from './schema'
 import { execSync } from 'child_process'
+import { stripJsonComments } from './jsonc'
 
 // 支持的配置文件名（按优先级排序）
 const CONFIG_FILENAMES = ['nine1bot.config.jsonc', 'nine1bot.config.json']
@@ -168,6 +169,15 @@ export function getMcpAuthPath(): string {
 }
 
 /**
+ * 获取平台适配密钥文件路径
+ * - Windows: %LOCALAPPDATA%\nine1bot\platform-secrets.json
+ * - Unix: ~/.local/share/nine1bot/platform-secrets.json
+ */
+export function getPlatformSecretsPath(): string {
+  return join(getDataDir(), 'platform-secrets.json')
+}
+
+/**
  * 获取项目环境变量目录路径
  * 与 auth.json 同级目录，便于统一管理 Nine1Bot 私有数据
  * - Windows: %LOCALAPPDATA%\nine1bot\project-env
@@ -187,77 +197,6 @@ async function fileExists(filePath: string): Promise<boolean> {
   } catch {
     return false
   }
-}
-
-/**
- * 去除 JSONC 中的注释
- */
-function stripJsonComments(jsonc: string): string {
-  let result = ''
-  let inString = false
-  let inSingleLineComment = false
-  let inMultiLineComment = false
-  let i = 0
-
-  while (i < jsonc.length) {
-    const char = jsonc[i]
-    const nextChar = jsonc[i + 1]
-
-    // 处理字符串
-    if (!inSingleLineComment && !inMultiLineComment) {
-      if (char === '"' && jsonc[i - 1] !== '\\') {
-        inString = !inString
-        result += char
-        i++
-        continue
-      }
-    }
-
-    // 在字符串中，直接添加字符
-    if (inString) {
-      result += char
-      i++
-      continue
-    }
-
-    // 检测单行注释开始
-    if (!inMultiLineComment && char === '/' && nextChar === '/') {
-      inSingleLineComment = true
-      i += 2
-      continue
-    }
-
-    // 检测多行注释开始
-    if (!inSingleLineComment && char === '/' && nextChar === '*') {
-      inMultiLineComment = true
-      i += 2
-      continue
-    }
-
-    // 检测单行注释结束
-    if (inSingleLineComment && char === '\n') {
-      inSingleLineComment = false
-      result += char
-      i++
-      continue
-    }
-
-    // 检测多行注释结束
-    if (inMultiLineComment && char === '*' && nextChar === '/') {
-      inMultiLineComment = false
-      i += 2
-      continue
-    }
-
-    // 不在注释中，添加字符
-    if (!inSingleLineComment && !inMultiLineComment) {
-      result += char
-    }
-
-    i++
-  }
-
-  return result
 }
 
 /**
