@@ -697,7 +697,7 @@ export namespace SessionPrompt {
           { args: taskArgs },
         )
         let executionError: Error | undefined
-        const taskAgent = await Agent.get(task.agent)
+        const taskAgent = await Agent.mustGet(task.agent)
         const taskCtx: Tool.Context = {
           agent: task.agent,
           messageID: assistantMessage.id,
@@ -864,10 +864,15 @@ export namespace SessionPrompt {
       }
 
       // normal processing
-      const agent = await RuntimeTiming.measure(timing, "agent.resolve", () => Agent.get(lastUser.agent), {
-        step,
-        agent: lastUser.agent,
-      })
+      const agent = await RuntimeTiming.measure(
+        timing,
+        "agent.resolve",
+        () => Agent.mustGet(lastUser.agent, { includeDeclaredOnly: true, includeRecommendable: true }),
+        {
+          step,
+          agent: lastUser.agent,
+        },
+      )
       const maxSteps = agent.steps ?? Infinity
       const isLastStep = step >= maxSteps
       msgs = await RuntimeTiming.measure(
@@ -1305,8 +1310,23 @@ export namespace SessionPrompt {
     return tools
   }
 
+  async function resolveUserMessageAgent(input: PromptInput, session: Session.Info) {
+    const name = input.agent ?? (await Agent.defaultAgent())
+    const frozenAgentName = input.runtimeProfileSnapshot?.agent.name ?? session.runtime?.agent
+    const isFrozenRuntimeAgent = !!input.agent && input.agent === frozenAgentName
+    return Agent.mustGet(
+      name,
+      isFrozenRuntimeAgent
+        ? {
+            includeDeclaredOnly: true,
+            includeRecommendable: true,
+          }
+        : undefined,
+    )
+  }
+
   async function createUserMessage(input: PromptInput, session: Session.Info) {
-    const agent = await Agent.get(input.agent ?? (await Agent.defaultAgent()))
+    const agent = await resolveUserMessageAgent(input, session)
     const needsSkillHint = input.parts.some(
       (part) => part.type === "file" && uploadedFileTypeMap[part.mime]?.skill,
     )
@@ -1713,7 +1733,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     if (session.revert) {
       await SessionRevert.cleanup(session)
     }
-    const agent = await Agent.get(input.agent)
+    const agent = await Agent.mustGet(input.agent, { includeDeclaredOnly: true, includeRecommendable: true })
     const model = input.model ?? agent.model ?? (await lastModel(input.sessionID))
     const userMsg: MessageV2.User = {
       id: Identifier.ascending("message"),
