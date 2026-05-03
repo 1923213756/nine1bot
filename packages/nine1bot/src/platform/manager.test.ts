@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
+import { win32 as win32Path } from 'node:path'
 import type { PlatformAdapterContext, PlatformAdapterContribution, PlatformRuntimeSourcesDescriptor, PlatformSecretAccess } from '@nine1bot/platform-protocol'
 import { RuntimePlatformAdapterRegistry } from '../../../../opencode/packages/opencode/src/runtime/platform/adapter'
 import { RuntimeSourceRegistry } from '../../../../opencode/packages/opencode/src/runtime/source/registry'
@@ -260,6 +261,60 @@ describe('PlatformAdapterManager', () => {
         }],
         skills: [{
           id: 'demo-skills',
+          status: 'registered',
+        }],
+      },
+    })
+  })
+
+  it('normalizes Windows runtime source paths before registering and reporting details', async () => {
+    const manager = new PlatformAdapterManager({
+      contributions: [contribution('feishu', {
+        defaultEnabled: true,
+        sources: {
+          agents: [{
+            id: 'feishu-agents',
+            directory: '/C:/code/nine1bot/packages/platform-feishu/agents',
+            namespace: 'feishu.agent',
+            visibility: 'recommendable',
+            lifecycle: 'platform-enabled',
+          }],
+          skills: [{
+            id: 'feishu-skills',
+            directory: 'file:///C:/code/nine1bot/packages/platform-feishu/skills',
+            namespace: 'feishu.skill',
+            visibility: 'declared-only',
+            lifecycle: 'platform-enabled',
+          }],
+        },
+      })],
+    })
+
+    manager.registerRuntimeAdapters()
+
+    const expectedAgentDirectory = win32Path.normalize('C:/code/nine1bot/packages/platform-feishu/agents')
+    const expectedSkillDirectory = win32Path.normalize('C:/code/nine1bot/packages/platform-feishu/skills')
+
+    expect(RuntimeSourceRegistry.listOwner('feishu')).toMatchObject({
+      agents: [{
+        id: 'feishu-agents',
+        directory: expectedAgentDirectory,
+      }],
+      skills: [{
+        id: 'feishu-skills',
+        directory: expectedSkillDirectory,
+      }],
+    })
+    await expect(manager.getDetail('feishu')).resolves.toMatchObject({
+      runtimeSources: {
+        agents: [{
+          id: 'feishu-agents',
+          directory: expectedAgentDirectory,
+          status: 'registered',
+        }],
+        skills: [{
+          id: 'feishu-skills',
+          directory: expectedSkillDirectory,
           status: 'registered',
         }],
       },

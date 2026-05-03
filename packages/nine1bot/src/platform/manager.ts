@@ -14,6 +14,8 @@ import type {
   PlatformSecretRef,
   PlatformValidationResult,
 } from '@nine1bot/platform-protocol'
+import { normalize as normalizePath, posix as posixPath, win32 as win32Path } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { RuntimePlatformAdapterRegistry } from '../../../../opencode/packages/opencode/src/runtime/platform/adapter'
 import { RuntimeSourceRegistry } from '../../../../opencode/packages/opencode/src/runtime/source/registry'
 
@@ -552,12 +554,7 @@ export class PlatformAdapterManager {
         kind: 'platform',
         enabled: record.enabled,
       },
-      sources: sources
-        ? {
-            agents: sources.agents?.map((source) => ({ ...source })),
-            skills: sources.skills?.map((source) => ({ ...source })),
-          }
-        : undefined,
+      sources: normalizeRuntimeSources(sources),
     })
   }
 
@@ -566,13 +563,14 @@ export class PlatformAdapterManager {
     const sources = contribution?.runtime?.sources
     if (!sources?.agents?.length && !sources?.skills?.length) return undefined
 
+    const normalizedSources = normalizeRuntimeSources(sources) ?? {}
     const registered = RuntimeSourceRegistry.listOwner(record.id)
     const status = runtimeSourceStatus(record)
     const registeredAgents = new Set(registered.agents.map((source) => source.id))
     const registeredSkills = new Set(registered.skills.map((source) => source.id))
 
     return {
-      agents: (sources.agents ?? []).map((source) => ({
+      agents: (normalizedSources.agents ?? []).map((source) => ({
         id: source.id,
         directory: source.directory,
         namespace: source.namespace,
@@ -580,7 +578,7 @@ export class PlatformAdapterManager {
         status: registeredAgents.has(source.id) ? 'registered' : status,
         error: runtimeSourceError(record, source.id, status),
       })),
-      skills: (sources.skills ?? []).map((source) => ({
+      skills: (normalizedSources.skills ?? []).map((source) => ({
         id: source.id,
         directory: source.directory,
         namespace: source.namespace,
@@ -793,6 +791,36 @@ function runtimeSourceStatus(record: PlatformManagerRecord): PlatformRuntimeSour
   if (record.lifecycleStatus === 'error') return 'error'
   if (!record.registered) return 'disabled'
   return 'error'
+}
+
+function normalizeRuntimeSources(sources?: PlatformRuntimeSourcesDescriptor): PlatformRuntimeSourcesDescriptor | undefined {
+  if (!sources) return undefined
+  return {
+    agents: sources.agents?.map((source) => normalizeRuntimeSource(source)),
+    skills: sources.skills?.map((source) => normalizeRuntimeSource(source)),
+  }
+}
+
+function normalizeRuntimeSource<T extends { directory: string }>(source: T): T {
+  return {
+    ...source,
+    directory: normalizeRuntimeSourceDirectory(source.directory),
+  }
+}
+
+function normalizeRuntimeSourceDirectory(directory: string): string {
+  const resolved = directory.startsWith('file://') ? fileURLToPath(directory) : directory
+
+  if (/^\/[A-Za-z]:[\\/]/.test(resolved)) {
+    return win32Path.normalize(resolved.slice(1))
+  }
+  if (/^[A-Za-z]:[\\/]/.test(resolved) || resolved.startsWith('\\\\')) {
+    return win32Path.normalize(resolved)
+  }
+  if (resolved.startsWith('/')) {
+    return posixPath.normalize(resolved)
+  }
+  return normalizePath(resolved)
 }
 
 function runtimeSourceError(
