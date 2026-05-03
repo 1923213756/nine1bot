@@ -1,5 +1,5 @@
 import { ref, computed } from 'vue'
-import { api, type Session, type Message, type SSEEvent, type MessagePart, type QuestionRequest, type PermissionRequest, type TodoItem, questionApi, permissionApi, SessionBusyError, setApiDirectory } from '../api/client'
+import { api, type EventStreamSubscription, type Session, type Message, type SSEEvent, type MessagePart, type QuestionRequest, type PermissionRequest, type TodoItem, questionApi, permissionApi, SessionBusyError, setApiDirectory } from '../api/client'
 import { collectActivePageContext } from '../api/page-context'
 import { useParallelSessions, MAX_PARALLEL_AGENTS } from './useParallelSessions'
 
@@ -51,8 +51,8 @@ export function useSession() {
   const isSummarizing = ref(false)
 
   // 事件源订阅
-  let eventSource: EventSource | null = null
-  let sessionEventSource: EventSource | null = null
+  let eventSource: EventStreamSubscription | null = null
+  let sessionEventSource: EventStreamSubscription | null = null
   let subscribedRuntimeSessionId: string | null = null
 
   function reconnectEventsForDirectory() {

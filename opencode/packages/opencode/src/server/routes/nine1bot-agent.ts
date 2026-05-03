@@ -660,6 +660,9 @@ export const Nine1BotAgentRoutes = lazy(() =>
         const sessionID = c.req.valid("param").sessionID
         log.info("controller event connected", { sessionID })
         const startedAt = Date.now()
+        c.header("Cache-Control", "no-cache, no-transform")
+        c.header("X-Accel-Buffering", "no")
+        c.header("Connection", "keep-alive")
         return streamSSE(c, async (stream) => {
           await emitControllerMetrics({
             route: "/nine1bot/agent/sessions/:sessionID/events",
@@ -669,17 +672,25 @@ export const Nine1BotAgentRoutes = lazy(() =>
             status: 200,
             accepted: true,
           })
-          await writeEnvelope(stream, RuntimeControllerEvents.connected(sessionID))
-          const unsub = Bus.subscribeAll(async (event) => {
+          let writeChain = Promise.resolve()
+          const writeQueued = (envelope: RuntimeControllerEvents.RuntimeEventEnvelope) => {
+            writeChain = writeChain
+              .then(() => writeEnvelope(stream, envelope))
+              .catch((error) => {
+                log.warn("failed to write controller event", { sessionID, error })
+              })
+            return writeChain
+          }
+
+          await writeQueued(RuntimeControllerEvents.connected(sessionID))
+          const unsub = Bus.subscribeAll((event) => {
             for (const envelope of RuntimeControllerEvents.project(event, { sessionID })) {
-              await writeEnvelope(stream, envelope)
+              void writeQueued(envelope)
             }
           })
 
           const heartbeat = setInterval(() => {
-            writeEnvelope(stream, RuntimeControllerEvents.heartbeat(sessionID)).catch((error) =>
-              log.warn("failed to write heartbeat", { error }),
-            )
+            void writeQueued(RuntimeControllerEvents.heartbeat(sessionID))
           }, 30000)
 
           await new Promise<void>((resolve) => {

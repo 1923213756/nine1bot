@@ -55,4 +55,18 @@ describe("ScreenBuffer", () => {
     expect(ansi).toContain("new3")
     expect(ansi).not.toContain("old1")
   })
+
+  test("serializes overlapping writes before reads and waits", async () => {
+    const buffer = createBuffer({ rows: 3, cols: 40, scrollback: 100 })
+
+    const first = buffer.write("first")
+    const second = buffer.write("\r\nsecond")
+    await Promise.all([first, second])
+
+    expect(buffer.getScreen()).toEqual(["first", "second", ""])
+    await expect(buffer.waitForPattern("second", 100)).resolves.toEqual({
+      matched: true,
+      timedOut: false,
+    })
+  })
 })

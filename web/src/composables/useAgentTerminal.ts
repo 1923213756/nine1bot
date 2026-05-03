@@ -15,77 +15,188 @@ export interface AgentTerminalInfo {
 
 export interface TerminalScreen {
   id: string
+  sessionID: string
   screen: string
   screenAnsi: string
   cursor: { row: number; col: number }
-  /** 原始输出增量数据 */
   outputData?: string
+  outputSeq?: number
+  outputResetToken?: number
+  latestSeq?: number
 }
 
 const terminals = ref<Map<string, AgentTerminalInfo>>(new Map())
 const terminalScreens = ref<Map<string, TerminalScreen>>(new Map())
-const activeTerminalId = ref<string | null>(null)
+const activeTerminalBySession = ref<Map<string, string>>(new Map())
+const currentSessionID = ref<string | null>(null)
 const isPanelOpen = ref(false)
-const isInitialized = ref(false)
 
-export function useAgentTerminal() {
-  const terminalList = computed(() => Array.from(terminals.value.values()))
+const initializedSessions = new Set<string>()
+const recoveringTerminals = new Set<string>()
+const queuedRecoveries = new Set<string>()
+let resetTokenCounter = 0
 
-  const activeTerminal = computed(() => {
-    if (!activeTerminalId.value) return null
-    return terminals.value.get(activeTerminalId.value) || null
-  })
+function emptyScreen(id: string, sessionID: string): TerminalScreen {
+  return {
+    id,
+    sessionID,
+    screen: '',
+    screenAnsi: '',
+    cursor: { row: 0, col: 0 },
+    outputSeq: 0,
+    latestSeq: 0,
+  }
+}
 
-  const activeScreen = computed(() => {
-    if (!activeTerminalId.value) return null
-    return terminalScreens.value.get(activeTerminalId.value) || null
-  })
+function isVisibleSession(sessionID?: string) {
+  return Boolean(sessionID && currentSessionID.value && sessionID === currentSessionID.value)
+}
 
-  const hasTerminals = computed(() => terminals.value.size > 0)
+function visibleTerminalList() {
+  const sessionID = currentSessionID.value
+  if (!sessionID) return []
+  return terminalListForSession(sessionID)
+}
 
-  /**
-   * 初始化：从后端加载现有终端列表
-   * 应该在 SSE 连接建立后调用
-   * @param force 强制重新初始化，忽略 isInitialized 标志
-   */
-  async function initialize(force = false) {
-    if (isInitialized.value && !force) {
-      console.log('[AgentTerminal] Already initialized, skipping')
+function terminalListForSession(sessionID: string) {
+  return Array.from(terminals.value.values()).filter((terminal) => terminal.sessionID === sessionID)
+}
+
+function currentActiveTerminalId() {
+  const sessionID = currentSessionID.value
+  if (!sessionID) return null
+  const active = activeTerminalBySession.value.get(sessionID)
+  if (active && terminals.value.get(active)?.sessionID === sessionID) return active
+  return visibleTerminalList()[0]?.id || null
+}
+
+async function refreshScreen(id: string, sessionID: string) {
+  try {
+    const screenData = await agentTerminalApi.getScreen(id, sessionID)
+    const existing = terminalScreens.value.get(id)
+    terminalScreens.value.set(id, {
+      ...emptyScreen(id, screenData.sessionID || sessionID),
+      ...existing,
+      ...screenData,
+      outputData: existing?.outputData,
+      outputSeq: existing?.outputSeq,
+      outputResetToken: existing?.outputResetToken,
+      latestSeq: existing?.latestSeq,
+    })
+  } catch (error) {
+    console.warn(`[AgentTerminal] Failed to refresh screen for terminal ${id}:`, error)
+  }
+}
+
+async function recoverTerminalOutput(id: string, afterSeq?: number) {
+  if (recoveringTerminals.has(id)) {
+    queuedRecoveries.add(id)
+    return
+  }
+  const terminal = terminals.value.get(id)
+  const sessionID = terminal?.sessionID || currentSessionID.value
+  if (!sessionID) return
+
+  recoveringTerminals.add(id)
+  try {
+    const snapshot = await agentTerminalApi.getBuffer(id, sessionID, afterSeq)
+    const existing = terminalScreens.value.get(id) || emptyScreen(id, sessionID)
+    if (snapshot.reset) {
+      terminalScreens.value.set(id, {
+        ...existing,
+        sessionID,
+        outputData: snapshot.buffer,
+        outputSeq: snapshot.latestSeq,
+        outputResetToken: ++resetTokenCounter,
+        latestSeq: snapshot.latestSeq,
+      })
+      await refreshScreen(id, sessionID)
       return
     }
 
-    console.log('[AgentTerminal] Initializing...')
+    const data = snapshot.chunks.map((chunk) => chunk.data).join('')
+    terminalScreens.value.set(id, {
+      ...existing,
+      sessionID,
+      outputData: data,
+      outputSeq: snapshot.latestSeq,
+      latestSeq: snapshot.latestSeq,
+    })
+    await refreshScreen(id, sessionID)
+  } catch (error) {
+    console.warn(`[AgentTerminal] Failed to recover terminal ${id}:`, error)
+  } finally {
+    recoveringTerminals.delete(id)
+    if (queuedRecoveries.delete(id)) {
+      const latestSeq = terminalScreens.value.get(id)?.latestSeq
+      void recoverTerminalOutput(id, latestSeq ?? afterSeq)
+    }
+  }
+}
+
+export function useAgentTerminal() {
+  const terminalList = computed(() => visibleTerminalList())
+
+  const activeTerminalId = computed(() => currentActiveTerminalId())
+
+  const activeTerminal = computed(() => {
+    const id = activeTerminalId.value
+    return id ? terminals.value.get(id) || null : null
+  })
+
+  const activeScreen = computed(() => {
+    const id = activeTerminalId.value
+    return id ? terminalScreens.value.get(id) || null : null
+  })
+
+  const hasTerminals = computed(() => terminalList.value.length > 0)
+
+  function setSessionContext(sessionID?: string | null) {
+    const next = sessionID || null
+    if (currentSessionID.value === next) return
+    currentSessionID.value = next
+    if (!next) {
+      isPanelOpen.value = false
+      return
+    }
+    void initialize(false)
+  }
+
+  async function initialize(force = false) {
+    const sessionID = currentSessionID.value
+    if (!sessionID) return
+    if (initializedSessions.has(sessionID) && !force) return
 
     try {
-      const list = await agentTerminalApi.list()
-      console.log('[AgentTerminal] Fetched terminals:', list.length)
-
-      for (const info of list) {
-        terminals.value.set(info.id, info)
-        // 获取每个终端的屏幕内容
-        try {
-          const screenData = await agentTerminalApi.getScreen(info.id)
-          terminalScreens.value.set(info.id, {
-            id: info.id,
-            ...screenData
-          })
-          console.log(`[AgentTerminal] Loaded screen for terminal ${info.id}`)
-        } catch (e) {
-          console.warn(`[AgentTerminal] Failed to get screen for terminal ${info.id}:`, e)
+      const list = await agentTerminalApi.list(sessionID)
+      const ids = new Set(list.map((info) => info.id))
+      for (const [id, info] of terminals.value) {
+        if (info.sessionID === sessionID && !ids.has(id)) {
+          terminals.value.delete(id)
+          terminalScreens.value.delete(id)
         }
       }
 
-      // 如果有终端，选中第一个并打开面板
-      if (list.length > 0) {
-        activeTerminalId.value = list[0].id
-        isPanelOpen.value = true
-        console.log('[AgentTerminal] Auto-selected terminal:', list[0].id)
+      for (const info of list) {
+        terminals.value.set(info.id, info)
+        const existing = terminalScreens.value.get(info.id)
+        await refreshScreen(info.id, sessionID)
+        if (existing?.latestSeq !== undefined) {
+          await recoverTerminalOutput(info.id, existing.latestSeq)
+        }
       }
 
-      isInitialized.value = true
-      console.log('[AgentTerminal] Initialization complete')
-    } catch (e) {
-      console.error('[AgentTerminal] Failed to initialize:', e)
+      const visible = visibleTerminalList()
+      const active = activeTerminalBySession.value.get(sessionID)
+      if (!active || !ids.has(active)) {
+        activeTerminalBySession.value.set(sessionID, visible[0]?.id || '')
+      }
+      if (visible.length > 0) {
+        isPanelOpen.value = true
+      }
+      initializedSessions.add(sessionID)
+    } catch (error) {
+      console.error('[AgentTerminal] Failed to initialize:', error)
     }
   }
 
@@ -94,18 +205,18 @@ export function useAgentTerminal() {
 
     switch (type) {
       case 'server.connected': {
-        // SSE 连接建立后，初始化终端列表
-        console.log('[AgentTerminal] Received server.connected, triggering initialize')
-        initialize()
+        void initialize(true)
         break
       }
 
       case 'agent-terminal.created': {
         const info = properties.info as AgentTerminalInfo
         terminals.value.set(info.id, info)
-        // 自动选中新创建的终端并打开面板
-        activeTerminalId.value = info.id
-        isPanelOpen.value = true
+        if (isVisibleSession(info.sessionID)) {
+          activeTerminalBySession.value.set(info.sessionID, info.id)
+          isPanelOpen.value = true
+          void refreshScreen(info.id, info.sessionID)
+        }
         break
       }
 
@@ -117,60 +228,66 @@ export function useAgentTerminal() {
 
       case 'agent-terminal.screen': {
         const screen = properties as TerminalScreen
-        // 保留已有的 outputData，只更新其他字段
+        if (!isVisibleSession(screen.sessionID)) break
         const existing = terminalScreens.value.get(screen.id)
         terminalScreens.value.set(screen.id, {
           ...screen,
-          outputData: existing?.outputData
+          outputData: existing?.outputData,
+          outputSeq: existing?.outputSeq,
+          outputResetToken: existing?.outputResetToken,
+          latestSeq: existing?.latestSeq,
         })
         break
       }
 
       case 'agent-terminal.output': {
-        // 原始输出增量事件
-        const { id, data } = properties as { id: string; data: string }
-        const existing = terminalScreens.value.get(id)
-        if (existing) {
-          // 更新 outputData，触发前端追加
-          terminalScreens.value.set(id, {
-            ...existing,
-            outputData: data
-          })
-        } else {
-          // 终端尚未初始化，创建占位
-          terminalScreens.value.set(id, {
-            id,
-            screen: '',
-            screenAnsi: '',
-            cursor: { row: 0, col: 0 },
-            outputData: data
-          })
+        const { id, sessionID, seq, data } = properties as {
+          id: string
+          sessionID: string
+          seq: number
+          data: string
         }
+        if (!isVisibleSession(sessionID)) break
+
+        const existing = terminalScreens.value.get(id) || emptyScreen(id, sessionID)
+        const lastSeq = existing.latestSeq ?? existing.outputSeq ?? 0
+        if (seq <= lastSeq) break
+        if (seq > lastSeq + 1) {
+          void recoverTerminalOutput(id, lastSeq)
+          break
+        }
+
+        terminalScreens.value.set(id, {
+          ...existing,
+          sessionID,
+          outputData: data,
+          outputSeq: seq,
+          latestSeq: seq,
+        })
         break
       }
 
       case 'agent-terminal.exited': {
-        const { id } = properties as { id: string; exitCode: number }
+        const { id, sessionID } = properties as { id: string; sessionID: string; exitCode: number }
         const terminal = terminals.value.get(id)
         if (terminal) {
-          terminal.status = 'exited'
-          terminals.value.set(id, { ...terminal })
+          terminals.value.set(id, { ...terminal, status: 'exited' })
         }
-        // 不自动清理，让用户决定是否关闭
+        if (isVisibleSession(sessionID)) {
+          void refreshScreen(id, sessionID)
+        }
         break
       }
 
       case 'agent-terminal.closed': {
-        const { id } = properties as { id: string }
+        const { id, sessionID } = properties as { id: string; sessionID: string }
         terminals.value.delete(id)
         terminalScreens.value.delete(id)
-        // 如果关闭的是当前活跃终端，切换到其他终端
-        if (activeTerminalId.value === id) {
-          const remaining = Array.from(terminals.value.keys())
-          activeTerminalId.value = remaining[0] || null
+        if (activeTerminalBySession.value.get(sessionID) === id) {
+          const remaining = terminalListForSession(sessionID)
+          activeTerminalBySession.value.set(sessionID, remaining[0]?.id || '')
         }
-        // 如果没有终端了，关闭面板
-        if (terminals.value.size === 0) {
+        if (isVisibleSession(sessionID) && visibleTerminalList().length === 0) {
           isPanelOpen.value = false
         }
         break
@@ -179,8 +296,9 @@ export function useAgentTerminal() {
   }
 
   function selectTerminal(id: string) {
-    if (terminals.value.has(id)) {
-      activeTerminalId.value = id
+    const terminal = terminals.value.get(id)
+    if (terminal && isVisibleSession(terminal.sessionID)) {
+      activeTerminalBySession.value.set(terminal.sessionID, id)
     }
   }
 
@@ -189,33 +307,29 @@ export function useAgentTerminal() {
   }
 
   function openPanel() {
-    isPanelOpen.value = true
+    if (hasTerminals.value) isPanelOpen.value = true
   }
 
   function closePanel() {
     isPanelOpen.value = false
   }
 
-  /**
-   * 向终端发送输入
-   */
   async function writeToTerminal(id: string, data: string): Promise<boolean> {
     try {
-      return await agentTerminalApi.write(id, data)
-    } catch (e) {
-      console.error('Failed to write to terminal:', e)
+      const terminal = terminals.value.get(id)
+      return await agentTerminalApi.write(id, data, terminal?.sessionID || currentSessionID.value || undefined)
+    } catch (error) {
+      console.error('Failed to write to terminal:', error)
       return false
     }
   }
 
-  /**
-   * 关闭指定终端
-   */
   async function closeTerminal(id: string): Promise<boolean> {
     try {
-      return await agentTerminalApi.close(id)
-    } catch (e) {
-      console.error('Failed to close terminal:', e)
+      const terminal = terminals.value.get(id)
+      return await agentTerminalApi.close(id, terminal?.sessionID || currentSessionID.value || undefined)
+    } catch (error) {
+      console.error('Failed to close terminal:', error)
       return false
     }
   }
@@ -223,22 +337,26 @@ export function useAgentTerminal() {
   function clearTerminals() {
     terminals.value.clear()
     terminalScreens.value.clear()
-    activeTerminalId.value = null
-    isInitialized.value = false
+    activeTerminalBySession.value.clear()
+    currentSessionID.value = null
+    initializedSessions.clear()
+    recoveringTerminals.clear()
+    queuedRecoveries.clear()
+    isPanelOpen.value = false
   }
 
   return {
-    // State
     terminals: terminalList,
     activeTerminalId,
     activeTerminal,
     activeScreen,
     isPanelOpen,
     hasTerminals,
-
-    // Actions
+    currentSessionID,
+    setSessionContext,
     initialize,
     handleSSEEvent,
+    recoverTerminalOutput,
     selectTerminal,
     togglePanel,
     openPanel,

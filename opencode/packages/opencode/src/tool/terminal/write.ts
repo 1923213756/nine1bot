@@ -43,7 +43,7 @@ Examples:
   }),
 
   async execute(params, ctx) {
-    const info = AgentTerminal.get(params.id)
+    const info = AgentTerminal.get(params.id, ctx.sessionID)
     if (!info) {
       throw new Error(`Terminal session not found: ${params.id}`)
     }
@@ -98,7 +98,7 @@ Examples:
       }
     }
 
-    const success = AgentTerminal.write(params.id, input)
+    const success = AgentTerminal.write(params.id, input, ctx.sessionID)
     if (!success) {
       throw new Error(`Failed to write to terminal: ${params.id}`)
     }
@@ -107,7 +107,7 @@ Examples:
     await new Promise((resolve) => setTimeout(resolve, 50))
 
     // Get current screen for feedback
-    const screen = AgentTerminal.getScreen(params.id) || ""
+    const screen = (await AgentTerminal.getScreen(params.id, ctx.sessionID)) || ""
 
     return {
       title: `Sent to ${info.name}`,

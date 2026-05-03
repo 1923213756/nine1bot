@@ -35,7 +35,7 @@ Examples:
   }),
 
   async execute(params, ctx) {
-    const info = AgentTerminal.get(params.id)
+    const info = AgentTerminal.get(params.id, ctx.sessionID)
     if (!info) {
       throw new Error(`Terminal session not found: ${params.id}`)
     }
@@ -52,9 +52,9 @@ Examples:
       },
     })
 
-    const result = await AgentTerminal.waitFor(params.id, params.pattern, timeout)
+    const result = await AgentTerminal.waitFor(params.id, params.pattern, timeout, ctx.sessionID)
 
-    const screenInfo = AgentTerminal.getScreenInfo(params.id)
+    const screenInfo = await AgentTerminal.getScreenInfo(params.id, ctx.sessionID)
     const width = Math.min(screenInfo?.cols || 80, 80)
 
     if (result.matched) {

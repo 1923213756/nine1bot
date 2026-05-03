@@ -27,21 +27,21 @@ If the output is too large, the latest terminal content is kept and older histor
   }),
 
   async execute(params, ctx) {
-    const info = AgentTerminal.get(params.id)
+    const info = AgentTerminal.get(params.id, ctx.sessionID)
     if (!info) {
       throw new Error(`Terminal session not found: ${params.id}`)
     }
 
-    const screenInfo = AgentTerminal.getScreenInfo(params.id)
+    const screenInfo = await AgentTerminal.getScreenInfo(params.id, ctx.sessionID)
     let content: string
 
     if (params.includeHistory) {
-      content = AgentTerminal.getFullView(params.id, params.historyLines || 50) || ""
+      content = (await AgentTerminal.getFullView(params.id, params.historyLines || 50, ctx.sessionID)) || ""
     } else {
-      content = AgentTerminal.getScreen(params.id) || ""
+      content = (await AgentTerminal.getScreen(params.id, ctx.sessionID)) || ""
     }
 
-    const cursor = AgentTerminal.getCursor(params.id)
+    const cursor = await AgentTerminal.getCursor(params.id, ctx.sessionID)
     const width = Math.min(screenInfo?.cols || 80, 80)
 
     const stateInfo = [

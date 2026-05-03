@@ -20,7 +20,7 @@ use terminal_write to send "exit" or Ctrl+D first, then close.`,
   }),
 
   async execute(params, ctx) {
-    const info = AgentTerminal.get(params.id)
+    const info = AgentTerminal.get(params.id, ctx.sessionID)
     if (!info) {
       throw new Error(`Terminal session not found: ${params.id}`)
     }
@@ -28,7 +28,7 @@ use terminal_write to send "exit" or Ctrl+D first, then close.`,
     const name = info.name
     const wasRunning = info.status === "running"
 
-    const success = await AgentTerminal.close(params.id)
+    const success = await AgentTerminal.close(params.id, ctx.sessionID)
     if (!success) {
       throw new Error(`Failed to close terminal: ${params.id}`)
     }
