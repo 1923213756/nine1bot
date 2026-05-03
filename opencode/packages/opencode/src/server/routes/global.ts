@@ -61,47 +61,54 @@ export const GlobalRoutes = lazy(() =>
             },
           },
         },
-      }),
-      async (c) => {
-        log.info("global event connected")
-        return streamSSE(c, async (stream) => {
-          stream.writeSSE({
-            data: JSON.stringify({
+        }),
+        async (c) => {
+          log.info("global event connected")
+          c.header("Cache-Control", "no-cache, no-transform")
+          c.header("X-Accel-Buffering", "no")
+          c.header("Connection", "keep-alive")
+          return streamSSE(c, async (stream) => {
+            let writeChain = Promise.resolve()
+            const writeQueued = (data: unknown) => {
+              writeChain = writeChain
+                .then(() => stream.writeSSE({ data: JSON.stringify(data) }))
+                .catch((error) => {
+                  log.warn("failed to write global event stream", { error })
+                })
+              return writeChain
+            }
+
+            await writeQueued({
               payload: {
                 type: "server.connected",
                 properties: {},
               },
-            }),
-          })
-          async function handler(event: any) {
-            await stream.writeSSE({
-              data: JSON.stringify(event),
             })
-          }
-          GlobalBus.on("event", handler)
+            function handler(event: any) {
+              void writeQueued(event)
+            }
+            GlobalBus.on("event", handler)
 
-          // Send heartbeat every 30s to prevent WKWebView timeout (60s default)
-          const heartbeat = setInterval(() => {
-            stream.writeSSE({
-              data: JSON.stringify({
+            // Send heartbeat every 30s to prevent WKWebView timeout (60s default)
+            const heartbeat = setInterval(() => {
+              void writeQueued({
                 payload: {
                   type: "server.heartbeat",
                   properties: {},
                 },
-              }),
-            })
-          }, 30000)
+              })
+            }, 30000)
 
-          await new Promise<void>((resolve) => {
-            stream.onAbort(() => {
-              clearInterval(heartbeat)
-              GlobalBus.off("event", handler)
-              resolve()
-              log.info("global event disconnected")
+            await new Promise<void>((resolve) => {
+              stream.onAbort(() => {
+                clearInterval(heartbeat)
+                GlobalBus.off("event", handler)
+                resolve()
+                log.info("global event disconnected")
+              })
             })
           })
-        })
-      },
+        },
     )
     .post(
       "/dispose",

@@ -1113,13 +1113,17 @@ export const api = {
   },
 
   // 订阅事件流（带自动重连）
-  subscribeEvents(onEvent: (event: SSEEvent) => void): EventSource {
-    let eventSource: EventSource
+  subscribeEvents(onEvent: (event: SSEEvent) => void): EventStreamSubscription {
+    let eventSource: EventSource | null = null
     let reconnectAttempts = 0
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let closed = false
     const maxReconnectAttempts = 5
     const baseReconnectDelay = 1000 // 1秒
 
-    function connect(): EventSource {
+    function connect(): void {
+      if (closed) return
+      eventSource?.close()
       eventSource = new EventSource(applyDirectoryToUrl(`${BASE_URL}/event`))
 
       eventSource.onopen = () => {
@@ -1141,16 +1145,18 @@ export const api = {
       }
 
       eventSource.onerror = (e) => {
+        if (closed) return
         console.error('EventSource error:', e)
 
         // 尝试重连
-        if (eventSource.readyState === EventSource.CLOSED) {
+        if (eventSource?.readyState === EventSource.CLOSED) {
           if (reconnectAttempts < maxReconnectAttempts) {
             reconnectAttempts++
             const delay = baseReconnectDelay * Math.pow(2, reconnectAttempts - 1) // 指数退避
             console.log(`EventSource disconnected, reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${maxReconnectAttempts})`)
-            setTimeout(() => {
-              if (eventSource.readyState === EventSource.CLOSED) {
+            reconnectTimer = setTimeout(() => {
+              reconnectTimer = null
+              if (!closed && eventSource?.readyState === EventSource.CLOSED) {
                 connect()
               }
             }, delay)
@@ -1160,15 +1166,27 @@ export const api = {
         }
       }
 
-      return eventSource
     }
 
-    return connect()
+    connect()
+    return {
+      close() {
+        closed = true
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer)
+          reconnectTimer = null
+        }
+        eventSource?.close()
+        eventSource = null
+      }
+    }
   },
 
-  subscribeSessionRuntimeEvents(sessionId: string, onEvent: (event: SSEEvent) => void): EventSource {
-    let eventSource: EventSource
+  subscribeSessionRuntimeEvents(sessionId: string, onEvent: (event: SSEEvent) => void): EventStreamSubscription {
+    let eventSource: EventSource | null = null
     let reconnectAttempts = 0
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let closed = false
     const maxReconnectAttempts = 5
     const baseReconnectDelay = 1000
 
@@ -1183,7 +1201,9 @@ export const api = {
       }
     }
 
-    function connect(): EventSource {
+    function connect(): void {
+      if (closed) return
+      eventSource?.close()
       eventSource = new EventSource(
         applyDirectoryToUrl(`${BASE_URL}/nine1bot/agent/sessions/${encodeURIComponent(sessionId)}/events`)
       )
@@ -1203,14 +1223,16 @@ export const api = {
       }
 
       eventSource.onerror = (e) => {
+        if (closed) return
         console.error('Runtime EventSource error:', e)
 
-        if (eventSource.readyState === EventSource.CLOSED) {
+        if (eventSource?.readyState === EventSource.CLOSED) {
           if (reconnectAttempts < maxReconnectAttempts) {
             reconnectAttempts++
             const delay = baseReconnectDelay * Math.pow(2, reconnectAttempts - 1)
-            setTimeout(() => {
-              if (eventSource.readyState === EventSource.CLOSED) {
+            reconnectTimer = setTimeout(() => {
+              reconnectTimer = null
+              if (!closed && eventSource?.readyState === EventSource.CLOSED) {
                 connect()
               }
             }, delay)
@@ -1220,20 +1242,34 @@ export const api = {
         }
       }
 
-      return eventSource
     }
 
-    return connect()
+    connect()
+    return {
+      close() {
+        closed = true
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer)
+          reconnectTimer = null
+        }
+        eventSource?.close()
+        eventSource = null
+      }
+    }
   },
 
   // Subscribe global events (cross-directory / cross-instance updates)
-  subscribeGlobalEvents(onEvent: (event: GlobalSSEEventEnvelope) => void): EventSource {
-    let eventSource: EventSource
+  subscribeGlobalEvents(onEvent: (event: GlobalSSEEventEnvelope) => void): EventStreamSubscription {
+    let eventSource: EventSource | null = null
     let reconnectAttempts = 0
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let closed = false
     const maxReconnectAttempts = 5
     const baseReconnectDelay = 1000
 
-    function connect(): EventSource {
+    function connect(): void {
+      if (closed) return
+      eventSource?.close()
       eventSource = new EventSource(`${BASE_URL}/global/event`)
 
       eventSource.onopen = () => {
@@ -1252,27 +1288,43 @@ export const api = {
       }
 
       eventSource.onerror = () => {
-        if (eventSource.readyState === EventSource.CLOSED && reconnectAttempts < maxReconnectAttempts) {
+        if (closed) return
+        if (eventSource?.readyState === EventSource.CLOSED && reconnectAttempts < maxReconnectAttempts) {
           reconnectAttempts++
           const delay = baseReconnectDelay * Math.pow(2, reconnectAttempts - 1)
-          setTimeout(() => {
-            if (eventSource.readyState === EventSource.CLOSED) {
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null
+            if (!closed && eventSource?.readyState === EventSource.CLOSED) {
               connect()
             }
           }, delay)
         }
       }
 
-      return eventSource
     }
 
-    return connect()
+    connect()
+    return {
+      close() {
+        closed = true
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer)
+          reconnectTimer = null
+        }
+        eventSource?.close()
+        eventSource = null
+      }
+    }
   },
 }
 
 export interface SSEEvent {
   type: string
   properties: Record<string, any>
+}
+
+export interface EventStreamSubscription {
+  close(): void
 }
 
 export interface GlobalSSEEventEnvelope {
@@ -2437,6 +2489,19 @@ export interface AgentTerminalInfo {
   lastActivity: number
 }
 
+export interface AgentTerminalOutputChunk {
+  seq: number
+  data: string
+}
+
+export interface AgentTerminalBuffer {
+  buffer: string
+  chunks: AgentTerminalOutputChunk[]
+  latestSeq: number
+  firstSeq: number
+  reset: boolean
+}
+
 export const agentTerminalApi = {
   // 获取终端列表
   async list(sessionID?: string): Promise<AgentTerminalInfo[]> {
@@ -2450,8 +2515,11 @@ export const agentTerminalApi = {
   },
 
   // 获取终端信息
-  async get(id: string): Promise<AgentTerminalInfo> {
-    const res = await fetchWithTimeout(`${BASE_URL}/agent-terminal/${encodeURIComponent(id)}`)
+  async get(id: string, sessionID?: string): Promise<AgentTerminalInfo> {
+    const params = new URLSearchParams()
+    if (sessionID) params.set('sessionID', sessionID)
+    const suffix = params.toString() ? `?${params}` : ''
+    const res = await fetchWithTimeout(`${BASE_URL}/agent-terminal/${encodeURIComponent(id)}${suffix}`)
     if (!res.ok) {
       throw new Error('Failed to fetch agent terminal')
     }
@@ -2459,11 +2527,11 @@ export const agentTerminalApi = {
   },
 
   // 调整终端大小
-  async resize(id: string, rows: number, cols: number): Promise<boolean> {
+  async resize(id: string, rows: number, cols: number, sessionID?: string): Promise<boolean> {
     const res = await fetchWithTimeout(`${BASE_URL}/agent-terminal/${encodeURIComponent(id)}/resize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rows, cols })
+      body: JSON.stringify({ rows, cols, ...(sessionID ? { sessionID } : {}) })
     })
     if (!res.ok) {
       throw new Error('Failed to resize agent terminal')
@@ -2472,8 +2540,11 @@ export const agentTerminalApi = {
   },
 
   // 获取终端屏幕内容
-  async getScreen(id: string): Promise<{ screen: string; screenAnsi: string; cursor: { row: number; col: number } }> {
-    const res = await fetchWithTimeout(`${BASE_URL}/agent-terminal/${encodeURIComponent(id)}/screen`)
+  async getScreen(id: string, sessionID?: string): Promise<{ sessionID: string; screen: string; screenAnsi: string; cursor: { row: number; col: number } }> {
+    const params = new URLSearchParams()
+    if (sessionID) params.set('sessionID', sessionID)
+    const suffix = params.toString() ? `?${params}` : ''
+    const res = await fetchWithTimeout(`${BASE_URL}/agent-terminal/${encodeURIComponent(id)}/screen${suffix}`)
     if (!res.ok) {
       throw new Error('Failed to fetch agent terminal screen')
     }
@@ -2481,8 +2552,12 @@ export const agentTerminalApi = {
   },
 
   // 获取终端原始缓冲区（用于初始化时回放历史）
-  async getBuffer(id: string): Promise<{ buffer: string }> {
-    const res = await fetchWithTimeout(`${BASE_URL}/agent-terminal/${encodeURIComponent(id)}/buffer`)
+  async getBuffer(id: string, sessionID?: string, afterSeq?: number): Promise<AgentTerminalBuffer> {
+    const params = new URLSearchParams()
+    if (sessionID) params.set('sessionID', sessionID)
+    if (afterSeq !== undefined) params.set('afterSeq', String(afterSeq))
+    const suffix = params.toString() ? `?${params}` : ''
+    const res = await fetchWithTimeout(`${BASE_URL}/agent-terminal/${encodeURIComponent(id)}/buffer${suffix}`)
     if (!res.ok) {
       throw new Error('Failed to fetch agent terminal buffer')
     }
@@ -2490,11 +2565,11 @@ export const agentTerminalApi = {
   },
 
   // 向终端发送输入
-  async write(id: string, data: string): Promise<boolean> {
+  async write(id: string, data: string, sessionID?: string): Promise<boolean> {
     const res = await fetchWithTimeout(`${BASE_URL}/agent-terminal/${encodeURIComponent(id)}/write`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data })
+      body: JSON.stringify({ data, ...(sessionID ? { sessionID } : {}) })
     })
     if (!res.ok) {
       throw new Error('Failed to write to agent terminal')
@@ -2503,8 +2578,11 @@ export const agentTerminalApi = {
   },
 
   // 关闭终端
-  async close(id: string): Promise<boolean> {
-    const res = await fetchWithTimeout(`${BASE_URL}/agent-terminal/${encodeURIComponent(id)}`, {
+  async close(id: string, sessionID?: string): Promise<boolean> {
+    const params = new URLSearchParams()
+    if (sessionID) params.set('sessionID', sessionID)
+    const suffix = params.toString() ? `?${params}` : ''
+    const res = await fetchWithTimeout(`${BASE_URL}/agent-terminal/${encodeURIComponent(id)}${suffix}`, {
       method: 'DELETE'
     })
     if (!res.ok) {

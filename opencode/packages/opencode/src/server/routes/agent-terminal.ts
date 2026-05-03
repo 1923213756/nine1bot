@@ -50,7 +50,7 @@ export const AgentTerminalRoutes = lazy(() =>
       }),
       validator("param", z.object({ id: z.string() })),
       async (c) => {
-        const info = AgentTerminal.get(c.req.valid("param").id)
+        const info = AgentTerminal.get(c.req.valid("param").id, c.req.query("sessionID"))
         if (!info) {
           throw new Storage.NotFoundError({ message: "Agent terminal not found" })
         }
@@ -81,12 +81,13 @@ export const AgentTerminalRoutes = lazy(() =>
         z.object({
           rows: z.number().int().min(1).max(500),
           cols: z.number().int().min(1).max(500),
+          sessionID: z.string().optional(),
         })
       ),
       async (c) => {
         const { id } = c.req.valid("param")
-        const { rows, cols } = c.req.valid("json")
-        const success = AgentTerminal.resize(id, rows, cols)
+        const { rows, cols, sessionID } = c.req.valid("json")
+        const success = AgentTerminal.resize(id, rows, cols, sessionID)
         if (!success) {
           throw new Storage.NotFoundError({ message: "Agent terminal not found or not running" })
         }
@@ -106,6 +107,7 @@ export const AgentTerminalRoutes = lazy(() =>
               "application/json": {
                 schema: resolver(
                   z.object({
+                    sessionID: z.string(),
                     screen: z.string(),
                     screenAnsi: z.string(),
                     cursor: z.object({ row: z.number(), col: z.number() }),
@@ -120,15 +122,17 @@ export const AgentTerminalRoutes = lazy(() =>
       validator("param", z.object({ id: z.string() })),
       async (c) => {
         const { id } = c.req.valid("param")
-        const screen = AgentTerminal.getScreen(id)
-        const screenAnsi = AgentTerminal.getScreenAnsi(id)
-        const cursor = AgentTerminal.getCursor(id)
+        const sessionID = c.req.query("sessionID")
+        const info = AgentTerminal.get(id, sessionID)
+        const screen = await AgentTerminal.getScreen(id, sessionID)
+        const screenAnsi = await AgentTerminal.getScreenAnsi(id, sessionID)
+        const cursor = await AgentTerminal.getCursor(id, sessionID)
 
-        if (screen === undefined || screenAnsi === undefined || cursor === undefined) {
+        if (!info || screen === undefined || screenAnsi === undefined || cursor === undefined) {
           throw new Storage.NotFoundError({ message: "Agent terminal not found" })
         }
 
-        return c.json({ screen, screenAnsi, cursor })
+        return c.json({ sessionID: info.sessionID, screen, screenAnsi, cursor })
       },
     )
     .get(
@@ -145,6 +149,10 @@ export const AgentTerminalRoutes = lazy(() =>
                 schema: resolver(
                   z.object({
                     buffer: z.string(),
+                    chunks: z.array(AgentTerminal.OutputChunk),
+                    latestSeq: z.number(),
+                    firstSeq: z.number(),
+                    reset: z.boolean(),
                   })
                 ),
               },
@@ -156,13 +164,19 @@ export const AgentTerminalRoutes = lazy(() =>
       validator("param", z.object({ id: z.string() })),
       async (c) => {
         const { id } = c.req.valid("param")
-        const buffer = AgentTerminal.getRawBuffer(id)
+        const afterSeqRaw = c.req.query("afterSeq")
+        const afterSeq = afterSeqRaw === undefined ? undefined : Number(afterSeqRaw)
+        const buffer = await AgentTerminal.getBuffer(
+          id,
+          Number.isFinite(afterSeq) ? afterSeq : undefined,
+          c.req.query("sessionID"),
+        )
 
         if (buffer === undefined) {
           throw new Storage.NotFoundError({ message: "Agent terminal not found" })
         }
 
-        return c.json({ buffer })
+        return c.json(buffer)
       },
     )
     .post(
@@ -188,12 +202,13 @@ export const AgentTerminalRoutes = lazy(() =>
         "json",
         z.object({
           data: z.string(),
+          sessionID: z.string().optional(),
         })
       ),
       async (c) => {
         const { id } = c.req.valid("param")
-        const { data } = c.req.valid("json")
-        const success = AgentTerminal.write(id, data)
+        const { data, sessionID } = c.req.valid("json")
+        const success = AgentTerminal.write(id, data, sessionID)
         if (!success) {
           throw new Storage.NotFoundError({ message: "Agent terminal not found or not running" })
         }
@@ -220,7 +235,7 @@ export const AgentTerminalRoutes = lazy(() =>
       }),
       validator("param", z.object({ id: z.string() })),
       async (c) => {
-        const success = await AgentTerminal.close(c.req.valid("param").id)
+        const success = await AgentTerminal.close(c.req.valid("param").id, c.req.query("sessionID"))
         if (!success) {
           throw new Storage.NotFoundError({ message: "Agent terminal not found" })
         }

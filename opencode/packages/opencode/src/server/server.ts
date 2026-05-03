@@ -701,45 +701,52 @@ export namespace Server {
                 },
               },
             },
-          }),
-          async (c) => {
-            log.info("event connected")
-            return streamSSE(c, async (stream) => {
-              stream.writeSSE({
-                data: JSON.stringify({
+            }),
+            async (c) => {
+              log.info("event connected")
+              c.header("Cache-Control", "no-cache, no-transform")
+              c.header("X-Accel-Buffering", "no")
+              c.header("Connection", "keep-alive")
+              return streamSSE(c, async (stream) => {
+                let writeChain = Promise.resolve()
+                const writeQueued = (data: unknown) => {
+                  writeChain = writeChain
+                    .then(() => stream.writeSSE({ data: JSON.stringify(data) }))
+                    .catch((error) => {
+                      log.warn("failed to write event stream", { error })
+                    })
+                  return writeChain
+                }
+
+                await writeQueued({
                   type: "server.connected",
                   properties: {},
-                }),
-              })
-              const unsub = Bus.subscribeAll(async (event) => {
-                await stream.writeSSE({
-                  data: JSON.stringify(event),
                 })
-                if (event.type === Bus.InstanceDisposed.type) {
-                  stream.close()
-                }
-              })
+                const unsub = Bus.subscribeAll((event) => {
+                  void writeQueued(event)
+                  if (event.type === Bus.InstanceDisposed.type) {
+                    void writeChain.finally(() => stream.close())
+                  }
+                })
 
-              // Send heartbeat every 30s to prevent WKWebView timeout (60s default)
-              const heartbeat = setInterval(() => {
-                stream.writeSSE({
-                  data: JSON.stringify({
+                // Send heartbeat every 30s to prevent WKWebView timeout (60s default)
+                const heartbeat = setInterval(() => {
+                  void writeQueued({
                     type: "server.heartbeat",
                     properties: {},
-                  }),
-                })
-              }, 30000)
+                  })
+                }, 30000)
 
-              await new Promise<void>((resolve) => {
-                stream.onAbort(() => {
-                  clearInterval(heartbeat)
-                  unsub()
-                  resolve()
-                  log.info("event disconnected")
+                await new Promise<void>((resolve) => {
+                  stream.onAbort(() => {
+                    clearInterval(heartbeat)
+                    unsub()
+                    resolve()
+                    log.info("event disconnected")
+                  })
                 })
               })
-            })
-          },
+            },
         )
         .all("/*", async (c) => {
           const requestPath = c.req.path
