@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { useAgentTerminal } from '../src/composables/useAgentTerminal'
 
 const originalFetch = globalThis.fetch
+const mockState = {
+  agtBChunks: [] as Array<{ seq: number; data: string }>,
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -30,12 +33,36 @@ function installFetchMock() {
       ])
     }
 
+    if (parsed.pathname === '/agent-terminal' && parsed.searchParams.get('sessionID') === 'ses_b') {
+      return jsonResponse([
+        {
+          id: 'agt_b',
+          name: 'B',
+          sessionID: 'ses_b',
+          status: 'running',
+          rows: 24,
+          cols: 80,
+          createdAt: 1,
+          lastActivity: 1,
+        },
+      ])
+    }
+
     if (parsed.pathname === '/agent-terminal/agt_a/screen') {
       return jsonResponse({
         sessionID: 'ses_a',
         screen: 'ready',
         screenAnsi: 'ready',
         cursor: { row: 0, col: 5 },
+      })
+    }
+
+    if (parsed.pathname === '/agent-terminal/agt_b/screen') {
+      return jsonResponse({
+        sessionID: 'ses_b',
+        screen: 'b ready',
+        screenAnsi: 'b ready',
+        cursor: { row: 0, col: 7 },
       })
     }
 
@@ -52,12 +79,38 @@ function installFetchMock() {
       })
     }
 
+    if (parsed.pathname === '/agent-terminal/agt_a/buffer' && parsed.searchParams.get('afterSeq') === '0') {
+      return jsonResponse({
+        buffer: '',
+        chunks: [],
+        latestSeq: 0,
+        firstSeq: 1,
+        reset: false,
+      })
+    }
+
+    if (parsed.pathname === '/agent-terminal/agt_b/buffer' && parsed.searchParams.get('afterSeq') === '0') {
+      return jsonResponse({
+        buffer: '',
+        chunks: mockState.agtBChunks,
+        latestSeq: mockState.agtBChunks.at(-1)?.seq ?? 0,
+        firstSeq: 1,
+        reset: false,
+      })
+    }
+
     return jsonResponse({ buffer: '', chunks: [], latestSeq: 0, firstSeq: 1, reset: true })
   }) as typeof fetch
 }
 
+async function settle() {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
 beforeEach(() => {
   useAgentTerminal().clearTerminals()
+  mockState.agtBChunks = []
   installFetchMock()
 })
 
@@ -70,7 +123,7 @@ describe('useAgentTerminal', () => {
   it('filters terminals by current session and ignores other session output', async () => {
     const terminal = useAgentTerminal()
     terminal.setSessionContext('ses_a')
-    await terminal.initialize(true)
+    await settle()
 
     expect(terminal.terminals.value.map((item) => item.id)).toEqual(['agt_a'])
     expect(terminal.activeTerminalId.value).toBe('agt_a')
@@ -99,10 +152,36 @@ describe('useAgentTerminal', () => {
     expect(terminal.activeScreen.value?.outputData).toBeUndefined()
   })
 
+  it('refreshes a previously initialized session when switching back after hidden output', async () => {
+    const terminal = useAgentTerminal()
+    terminal.setSessionContext('ses_b')
+    await settle()
+
+    expect(terminal.activeTerminalId.value).toBe('agt_b')
+    expect(terminal.activeScreen.value?.latestSeq).toBe(0)
+
+    terminal.setSessionContext('ses_a')
+    await settle()
+    mockState.agtBChunks = [{ seq: 1, data: 'hidden' }]
+
+    terminal.handleSSEEvent({
+      type: 'agent-terminal.output',
+      properties: { id: 'agt_b', sessionID: 'ses_b', seq: 1, data: 'hidden' },
+    })
+    expect(terminal.activeTerminalId.value).toBe('agt_a')
+
+    terminal.setSessionContext('ses_b')
+    await settle()
+
+    expect(terminal.activeTerminalId.value).toBe('agt_b')
+    expect(terminal.activeScreen.value?.outputData).toBe('hidden')
+    expect(terminal.activeScreen.value?.latestSeq).toBe(1)
+  })
+
   it('deduplicates output seqs and recovers gaps from the ring buffer', async () => {
     const terminal = useAgentTerminal()
     terminal.setSessionContext('ses_a')
-    await terminal.initialize(true)
+    await settle()
 
     terminal.handleSSEEvent({
       type: 'agent-terminal.output',
