@@ -144,6 +144,7 @@ export type PlatformActionResult = {
   status: 'ok' | 'failed' | 'pending' | 'requires-user-action'
   message?: string
   openUrl?: string
+  data?: Record<string, unknown>
   updatedStatus?: PlatformRuntimeStatus
   updatedSettings?: unknown
 }
