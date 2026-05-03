@@ -114,6 +114,16 @@ async function recoverTerminalOutput(id: string, afterSeq?: number) {
       return
     }
 
+    if (snapshot.chunks.length === 0) {
+      terminalScreens.value.set(id, {
+        ...existing,
+        sessionID,
+        latestSeq: snapshot.latestSeq,
+      })
+      await refreshScreen(id, sessionID)
+      return
+    }
+
     const data = snapshot.chunks.map((chunk) => chunk.data).join('')
     terminalScreens.value.set(id, {
       ...existing,
@@ -159,7 +169,7 @@ export function useAgentTerminal() {
       isPanelOpen.value = false
       return
     }
-    void initialize(false)
+    void initialize(true)
   }
 
   async function initialize(force = false) {
@@ -181,17 +191,15 @@ export function useAgentTerminal() {
         terminals.value.set(info.id, info)
         const existing = terminalScreens.value.get(info.id)
         await refreshScreen(info.id, sessionID)
-        if (existing?.latestSeq !== undefined) {
-          await recoverTerminalOutput(info.id, existing.latestSeq)
-        }
+        await recoverTerminalOutput(info.id, existing?.latestSeq ?? 0)
       }
 
-      const visible = visibleTerminalList()
+      const visible = terminalListForSession(sessionID)
       const active = activeTerminalBySession.value.get(sessionID)
       if (!active || !ids.has(active)) {
         activeTerminalBySession.value.set(sessionID, visible[0]?.id || '')
       }
-      if (visible.length > 0) {
+      if (currentSessionID.value === sessionID && visible.length > 0) {
         isPanelOpen.value = true
       }
       initializedSessions.add(sessionID)
