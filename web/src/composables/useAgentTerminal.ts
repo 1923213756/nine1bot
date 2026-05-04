@@ -70,7 +70,7 @@ function currentActiveTerminalId() {
   return visibleTerminalList()[0]?.id || null
 }
 
-async function refreshScreen(id: string, sessionID: string) {
+async function refreshScreen(id: string, sessionID: string): Promise<TerminalScreen | undefined> {
   try {
     const screenData = await agentTerminalApi.getScreen(id, sessionID)
     const existing = terminalScreens.value.get(id)
@@ -83,8 +83,13 @@ async function refreshScreen(id: string, sessionID: string) {
       outputResetToken: existing?.outputResetToken,
       latestSeq: existing?.latestSeq,
     })
+    return {
+      ...emptyScreen(id, screenData.sessionID || sessionID),
+      ...screenData,
+    }
   } catch (error) {
     console.warn(`[AgentTerminal] Failed to refresh screen for terminal ${id}:`, error)
+    return undefined
   }
 }
 
@@ -102,35 +107,43 @@ async function recoverTerminalOutput(id: string, afterSeq?: number) {
     const snapshot = await agentTerminalApi.getBuffer(id, sessionID, afterSeq)
     const existing = terminalScreens.value.get(id) || emptyScreen(id, sessionID)
     if (snapshot.reset) {
+      const screenData = await refreshScreen(id, sessionID)
+      const current = terminalScreens.value.get(id) || existing
       terminalScreens.value.set(id, {
-        ...existing,
+        ...current,
+        ...(screenData || {}),
         sessionID,
-        outputData: snapshot.buffer,
+        outputData: screenData?.screenAnsi ?? snapshot.buffer,
         outputSeq: snapshot.latestSeq,
         outputResetToken: ++resetTokenCounter,
         latestSeq: snapshot.latestSeq,
       })
-      await refreshScreen(id, sessionID)
       return
     }
 
-    if (snapshot.chunks.length === 0) {
+    const current = terminalScreens.value.get(id) || existing
+    const currentLatestSeq = current.latestSeq ?? current.outputSeq ?? afterSeq ?? 0
+    const chunks = snapshot.chunks.filter((chunk) => chunk.seq > currentLatestSeq)
+
+    if (chunks.length === 0) {
       terminalScreens.value.set(id, {
-        ...existing,
+        ...current,
         sessionID,
-        latestSeq: snapshot.latestSeq,
+        latestSeq: Math.max(currentLatestSeq, snapshot.latestSeq),
       })
       await refreshScreen(id, sessionID)
       return
     }
 
-    const data = snapshot.chunks.map((chunk) => chunk.data).join('')
+    const data = chunks.map((chunk) => chunk.data).join('')
+    const latestChunkSeq = chunks[chunks.length - 1]?.seq ?? snapshot.latestSeq
     terminalScreens.value.set(id, {
-      ...existing,
+      ...current,
       sessionID,
       outputData: data,
-      outputSeq: snapshot.latestSeq,
-      latestSeq: snapshot.latestSeq,
+      outputSeq: latestChunkSeq,
+      outputResetToken: undefined,
+      latestSeq: Math.max(latestChunkSeq, snapshot.latestSeq),
     })
     await refreshScreen(id, sessionID)
   } catch (error) {
@@ -270,6 +283,7 @@ export function useAgentTerminal() {
           sessionID,
           outputData: data,
           outputSeq: seq,
+          outputResetToken: undefined,
           latestSeq: seq,
         })
         break

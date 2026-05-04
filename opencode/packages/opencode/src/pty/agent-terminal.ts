@@ -179,7 +179,7 @@ export namespace AgentTerminal {
   }
 
   function belongsToSession(session: ActiveSession, sessionID?: string) {
-    return !sessionID || session.info.sessionID === sessionID
+    return Boolean(sessionID && session.info.sessionID === sessionID)
   }
 
   function shellArgs(command: string, inputArgs?: string[]) {

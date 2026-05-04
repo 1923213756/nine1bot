@@ -4,6 +4,8 @@ import { useAgentTerminal } from '../src/composables/useAgentTerminal'
 const originalFetch = globalThis.fetch
 const mockState = {
   agtBChunks: [] as Array<{ seq: number; data: string }>,
+  pauseAAfterSeq1: false,
+  resumeAAfterSeq1: undefined as (() => void) | undefined,
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -67,6 +69,11 @@ function installFetchMock() {
     }
 
     if (parsed.pathname === '/agent-terminal/agt_a/buffer' && parsed.searchParams.get('afterSeq') === '1') {
+      if (mockState.pauseAAfterSeq1) {
+        await new Promise<void>((resolve) => {
+          mockState.resumeAAfterSeq1 = resolve
+        })
+      }
       return jsonResponse({
         buffer: '',
         chunks: [
@@ -99,7 +106,7 @@ function installFetchMock() {
       })
     }
 
-    return jsonResponse({ buffer: '', chunks: [], latestSeq: 0, firstSeq: 1, reset: true })
+    return jsonResponse({ buffer: 'trimmed-tail', chunks: [], latestSeq: 0, firstSeq: 1, reset: true })
   }) as typeof fetch
 }
 
@@ -111,6 +118,8 @@ async function settle() {
 beforeEach(() => {
   useAgentTerminal().clearTerminals()
   mockState.agtBChunks = []
+  mockState.pauseAAfterSeq1 = false
+  mockState.resumeAAfterSeq1 = undefined
   installFetchMock()
 })
 
@@ -203,5 +212,49 @@ describe('useAgentTerminal', () => {
 
     expect(terminal.activeScreen.value?.outputData).toBe('twothree')
     expect(terminal.activeScreen.value?.latestSeq).toBe(3)
+  })
+
+  it('does not replay recovery chunks that arrived live while recovery was in flight', async () => {
+    const terminal = useAgentTerminal()
+    terminal.setSessionContext('ses_a')
+    await settle()
+
+    terminal.handleSSEEvent({
+      type: 'agent-terminal.output',
+      properties: { id: 'agt_a', sessionID: 'ses_a', seq: 1, data: 'one' },
+    })
+
+    mockState.pauseAAfterSeq1 = true
+    const recovery = terminal.recoverTerminalOutput('agt_a', 1)
+    await settle()
+
+    terminal.handleSSEEvent({
+      type: 'agent-terminal.output',
+      properties: { id: 'agt_a', sessionID: 'ses_a', seq: 2, data: 'two-live' },
+    })
+    mockState.resumeAAfterSeq1?.()
+    await recovery
+
+    expect(terminal.activeScreen.value?.outputData).toBe('three')
+    expect(terminal.activeScreen.value?.latestSeq).toBe(3)
+  })
+
+  it('uses the authoritative screen for reset recovery and clears reset token on later output', async () => {
+    const terminal = useAgentTerminal()
+    terminal.setSessionContext('ses_a')
+    await settle()
+
+    await terminal.recoverTerminalOutput('agt_a', -1)
+
+    expect(terminal.activeScreen.value?.outputData).toBe('ready')
+    expect(terminal.activeScreen.value?.outputResetToken).toBeGreaterThan(0)
+
+    terminal.handleSSEEvent({
+      type: 'agent-terminal.output',
+      properties: { id: 'agt_a', sessionID: 'ses_a', seq: 1, data: 'after-reset' },
+    })
+
+    expect(terminal.activeScreen.value?.outputData).toBe('after-reset')
+    expect(terminal.activeScreen.value?.outputResetToken).toBeUndefined()
   })
 })

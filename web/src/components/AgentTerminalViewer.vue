@@ -257,9 +257,7 @@ function applyOutput(item: { seq?: number; data: string; resetToken?: number }) 
   if (!terminal) return
 
   if (item.resetToken) {
-    terminal.clear()
-    terminal.reset()
-    if (item.data) terminal.write(item.data)
+    updateScreen(item.data || props.screenAnsi)
     lastAppliedSeq = item.seq ?? lastAppliedSeq
     return
   }

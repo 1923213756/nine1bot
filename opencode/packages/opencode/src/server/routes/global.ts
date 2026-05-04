@@ -68,12 +68,29 @@ export const GlobalRoutes = lazy(() =>
           c.header("X-Accel-Buffering", "no")
           c.header("Connection", "keep-alive")
           return streamSSE(c, async (stream) => {
-            let writeChain = Promise.resolve()
+            let writeChain: Promise<unknown> = Promise.resolve()
+            let pendingWrites = 0
+            let closing = false
+            const maxPendingWrites = 1024
             const writeQueued = (data: unknown) => {
+              if (closing) return Promise.resolve()
+              if (pendingWrites >= maxPendingWrites) {
+                closing = true
+                log.warn("global event stream backlog exceeded; closing slow client", { pendingWrites })
+                stream.close()
+                return Promise.resolve()
+              }
+              pendingWrites++
               writeChain = writeChain
-                .then(() => stream.writeSSE({ data: JSON.stringify(data) }))
+                .then(() => {
+                  if (closing) return
+                  return stream.writeSSE({ data: JSON.stringify(data) })
+                })
                 .catch((error) => {
                   log.warn("failed to write global event stream", { error })
+                })
+                .finally(() => {
+                  pendingWrites--
                 })
               return writeChain
             }
@@ -101,6 +118,7 @@ export const GlobalRoutes = lazy(() =>
 
             await new Promise<void>((resolve) => {
               stream.onAbort(() => {
+                closing = true
                 clearInterval(heartbeat)
                 GlobalBus.off("event", handler)
                 resolve()

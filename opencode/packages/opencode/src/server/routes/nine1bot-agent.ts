@@ -682,12 +682,29 @@ export const Nine1BotAgentRoutes = lazy(() =>
             status: 200,
             accepted: true,
           })
-          let writeChain = Promise.resolve()
+          let writeChain: Promise<unknown> = Promise.resolve()
+          let pendingWrites = 0
+          let closing = false
+          const maxPendingWrites = 1024
           const writeQueued = (envelope: RuntimeControllerEvents.RuntimeEventEnvelope) => {
+            if (closing) return Promise.resolve()
+            if (pendingWrites >= maxPendingWrites) {
+              closing = true
+              log.warn("controller event backlog exceeded; closing slow client", { sessionID, pendingWrites })
+              stream.close()
+              return Promise.resolve()
+            }
+            pendingWrites++
             writeChain = writeChain
-              .then(() => writeEnvelope(stream, envelope))
+              .then(() => {
+                if (closing) return
+                return writeEnvelope(stream, envelope)
+              })
               .catch((error) => {
                 log.warn("failed to write controller event", { sessionID, error })
+              })
+              .finally(() => {
+                pendingWrites--
               })
             return writeChain
           }
@@ -705,6 +722,7 @@ export const Nine1BotAgentRoutes = lazy(() =>
 
           await new Promise<void>((resolve) => {
             stream.onAbort(() => {
+              closing = true
               clearInterval(heartbeat)
               unsub()
               resolve()
