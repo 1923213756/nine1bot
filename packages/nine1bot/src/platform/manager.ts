@@ -9,6 +9,7 @@ import type {
   PlatformConfigField,
   PlatformDescriptor,
   PlatformRuntimeSourcesDescriptor,
+  PlatformRuntimeSourcesProvider,
   PlatformRuntimeStatus,
   PlatformSecretAccess,
   PlatformSecretRef,
@@ -86,6 +87,7 @@ export type PlatformRuntimeSourceSummary = {
   id: string
   directory: string
   namespace?: string
+  includeNamePrefix?: string
   visibility: string
   status: 'registered' | 'disabled' | 'error'
   error?: string
@@ -435,9 +437,26 @@ export class PlatformAdapterManager {
           updatedStatus: record.runtimeStatus,
         }
       }
+      let currentRecord = record
+      if (result.updatedSettings !== undefined) {
+        const previousEntry = this.config[id] ?? {}
+        const nextEntry = await this.prepareConfigEntry(record, previousEntry, {
+          settings: settingsRecord(result.updatedSettings),
+        })
+        const validation = await this.validateConfigEntry(record, nextEntry)
+        if (!validation.ok) {
+          throw new PlatformValidationError(validation.message ?? 'Invalid platform config', validation.fieldErrors ?? {})
+        }
+        this.configure({
+          ...this.config,
+          [id]: nextEntry,
+        })
+        this.registerRuntimeAdapters()
+        currentRecord = this.records.get(id) ?? currentRecord
+      }
       if (result.updatedStatus) {
         this.records.set(id, {
-          ...record,
+          ...currentRecord,
           lifecycleStatus: lifecycleStatusFromRuntime(result.updatedStatus.status),
           runtimeStatus: result.updatedStatus,
           error: result.updatedStatus.status === 'error' ? result.updatedStatus.message : undefined,
@@ -547,20 +566,20 @@ export class PlatformAdapterManager {
     }
   }
 
-  private registerRuntimeSources(record: PlatformManagerRecord, sources?: PlatformRuntimeSourcesDescriptor) {
+  private registerRuntimeSources(record: PlatformManagerRecord, sources?: PlatformRuntimeSourcesProvider) {
     RuntimeSourceRegistry.registerOwner({
       owner: {
         id: record.id,
         kind: 'platform',
         enabled: record.enabled,
       },
-      sources: normalizeRuntimeSources(sources),
+      sources: normalizeRuntimeSources(this.resolveRuntimeSources(record, sources)),
     })
   }
 
   private runtimeSourcesForRecord(record: PlatformManagerRecord): PlatformRuntimeSourcesSummary | undefined {
     const contribution = this.contributions.get(record.id)
-    const sources = contribution?.runtime?.sources
+    const sources = this.resolveRuntimeSources(record, contribution?.runtime?.sources)
     if (!sources?.agents?.length && !sources?.skills?.length) return undefined
 
     const normalizedSources = normalizeRuntimeSources(sources) ?? {}
@@ -582,11 +601,19 @@ export class PlatformAdapterManager {
         id: source.id,
         directory: source.directory,
         namespace: source.namespace,
+        includeNamePrefix: source.includeNamePrefix,
         visibility: source.visibility,
         status: registeredSkills.has(source.id) ? 'registered' : status,
         error: runtimeSourceError(record, source.id, status),
       })),
     }
+  }
+
+  private resolveRuntimeSources(
+    record: PlatformManagerRecord,
+    sources?: PlatformRuntimeSourcesProvider,
+  ): PlatformRuntimeSourcesDescriptor | undefined {
+    return typeof sources === 'function' ? sources(this.createContext(record)) : sources
   }
 
   private async prepareConfigEntry(
