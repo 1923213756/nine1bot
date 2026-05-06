@@ -83,8 +83,10 @@ defineExpose({ fit })
           </button>
         </div>
         <AgentTerminalViewer
+          :key="activeTerminal.id"
           ref="terminalViewerRef"
           :terminal-id="activeTerminal.id"
+          :session-id="activeTerminal.sessionID"
           :screen="activeScreen.screen"
           :screen-ansi="activeScreen.screenAnsi"
           :cursor="activeScreen.cursor"
@@ -92,6 +94,8 @@ defineExpose({ fit })
           :cols="activeTerminal.cols"
           :status="activeTerminal.status"
           :output-data="activeScreen.outputData"
+          :output-seq="activeScreen.outputSeq"
+          :output-reset-token="activeScreen.outputResetToken"
         />
       </template>
       <template v-else-if="terminals.length === 0">

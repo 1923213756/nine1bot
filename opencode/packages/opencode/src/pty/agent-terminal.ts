@@ -9,6 +9,7 @@ import { ProjectEnvironment } from "../project/environment"
 import { lazy } from "@opencode-ai/util/lazy"
 import { Shell } from "@/shell/shell"
 import { ScreenBuffer } from "./screen-buffer"
+import path from "path"
 
 /**
  * AgentTerminal - Agent 控制的持久化终端会话
@@ -23,6 +24,8 @@ export namespace AgentTerminal {
   const log = Log.create({ service: "agent-terminal" })
 
   const BUFFER_LIMIT = 1024 * 1024 * 2
+  const OUTPUT_FLUSH_INTERVAL = 25 // ms
+  const OUTPUT_FLUSH_BYTES = 64 * 1024
   const SCREEN_UPDATE_THROTTLE = 100 // ms
 
   const pty = lazy(async () => {
@@ -49,6 +52,32 @@ export namespace AgentTerminal {
     .meta({ ref: "AgentTerminal" })
 
   export type Info = z.infer<typeof Info>
+
+  export const OutputChunk = z.object({
+    seq: z.number().int().nonnegative(),
+    data: z.string(),
+  })
+
+  export type OutputChunk = z.infer<typeof OutputChunk>
+
+  export const BufferSnapshot = z.object({
+    buffer: z.string(),
+    chunks: z.array(OutputChunk),
+    latestSeq: z.number().int().nonnegative(),
+    firstSeq: z.number().int().nonnegative(),
+    reset: z.boolean(),
+  })
+
+  export type BufferSnapshot = z.infer<typeof BufferSnapshot>
+
+  export interface ScreenSnapshot {
+    sessionID: string
+    screen: string
+    screenAnsi: string
+    cursor: ScreenBuffer.CursorPosition
+    info: ScreenBuffer.ScreenInfo
+    fullView?: string
+  }
 
   export const CreateInput = z.object({
     name: z.string().optional(),
@@ -77,6 +106,7 @@ export namespace AgentTerminal {
       "agent-terminal.screen",
       z.object({
         id: Identifier.schema("agt"),
+        sessionID: z.string(),
         screen: z.string(),
         screenAnsi: z.string(),
         cursor: z.object({ row: z.number(), col: z.number() }),
@@ -87,16 +117,18 @@ export namespace AgentTerminal {
       "agent-terminal.output",
       z.object({
         id: Identifier.schema("agt"),
+        sessionID: z.string(),
+        seq: z.number().int().nonnegative(),
         data: z.string(),
       })
     ),
     Exited: BusEvent.define(
       "agent-terminal.exited",
-      z.object({ id: Identifier.schema("agt"), exitCode: z.number() })
+      z.object({ id: Identifier.schema("agt"), sessionID: z.string(), exitCode: z.number() })
     ),
     Closed: BusEvent.define(
       "agent-terminal.closed",
-      z.object({ id: Identifier.schema("agt") })
+      z.object({ id: Identifier.schema("agt"), sessionID: z.string() })
     ),
   }
 
@@ -105,8 +137,15 @@ export namespace AgentTerminal {
     process: IPty
     buffer: ScreenBuffer.Buffer
     rawBuffer: string
+    outputSeq: number
+    outputChunks: OutputChunk[]
+    outputChunkBytes: number
+    pendingOutput: string
+    outputFlushTimer: ReturnType<typeof setTimeout> | null
+    outputPublishChain: Promise<void>
     lastScreenUpdate: number
     screenUpdateTimer: ReturnType<typeof setTimeout> | null
+    screenPublishChain: Promise<void>
   }
 
   const state = Instance.state(
@@ -119,6 +158,9 @@ export namespace AgentTerminal {
         session.buffer.dispose()
         if (session.screenUpdateTimer) {
           clearTimeout(session.screenUpdateTimer)
+        }
+        if (session.outputFlushTimer) {
+          clearTimeout(session.outputFlushTimer)
         }
       }
       sessions.clear()
@@ -139,8 +181,27 @@ export namespace AgentTerminal {
   /**
    * 获取指定终端信息
    */
-  export function get(id: string): Info | undefined {
-    return state().get(id)?.info
+  export function get(id: string, sessionID: string): Info | undefined {
+    const session = state().get(id)
+    if (!session || !belongsToSession(session, sessionID)) return undefined
+    return session.info
+  }
+
+  function belongsToSession(session: ActiveSession, sessionID: string) {
+    return session.info.sessionID === sessionID
+  }
+
+  function shellArgs(command: string, inputArgs?: string[]) {
+    const args = [...(inputArgs ?? [])]
+    if (args.length > 0) return args
+
+    const basename = (process.platform === "win32" ? path.win32.basename(command) : path.basename(command))
+      .toLowerCase()
+      .replace(/\.exe$/, "")
+
+    if (basename === "bash" || basename === "zsh") return ["-l", "-i"]
+    if (basename === "sh" || basename === "dash") return ["-i"]
+    return args
   }
 
   /**
@@ -149,16 +210,9 @@ export namespace AgentTerminal {
   export async function create(input: CreateInput): Promise<Info> {
     const id = Identifier.create("agt", false)
     const command = input.command || Shell.preferred()
-    const args = input.args || []
+    const args = shellArgs(command, input.args)
     const rows = input.rows || 24
     const cols = input.cols || 120
-
-    if (command.endsWith("sh")) {
-      // 使用交互式登录 shell，确保加载完整用户环境
-      // -l: 登录 shell，加载 .profile/.bash_profile
-      // -i: 交互式 shell，加载 .bashrc/.zshrc
-      args.push("-l", "-i")
-    }
 
     const cwd = input.cwd || Instance.directory
     const projectEnv = await ProjectEnvironment.getAll(Instance.project.id)
@@ -205,8 +259,15 @@ export namespace AgentTerminal {
       process: ptyProcess,
       buffer: screenBuffer,
       rawBuffer: "",
+      outputSeq: 0,
+      outputChunks: [],
+      outputChunkBytes: 0,
+      pendingOutput: "",
+      outputFlushTimer: null,
+      outputPublishChain: Promise.resolve(),
       lastScreenUpdate: 0,
       screenUpdateTimer: null,
+      screenPublishChain: Promise.resolve(),
     }
 
     state().set(id, session)
@@ -215,20 +276,19 @@ export namespace AgentTerminal {
     ptyProcess.onData((data) => {
       session.info.lastActivity = Date.now()
       session.rawBuffer += data
+      session.pendingOutput += data
 
       // 保持原始缓冲区大小限制
       if (session.rawBuffer.length > BUFFER_LIMIT) {
         session.rawBuffer = session.rawBuffer.slice(-BUFFER_LIMIT)
       }
 
-      // 写入屏幕缓冲区
-      session.buffer.writeSync(data)
+      scheduleOutputFlush(session)
 
-      // 发送原始数据输出事件（前端可以用来保持滚动历史）
-      Bus.publish(Event.Output, { id, data })
-
-      // 节流屏幕更新事件
-      scheduleScreenUpdate(session)
+      void session.buffer.write(data).then(
+        () => scheduleScreenUpdate(session),
+        (error) => log.warn("failed to write terminal screen buffer", { id, error }),
+      )
     })
 
     // 处理退出
@@ -240,17 +300,70 @@ export namespace AgentTerminal {
         clearTimeout(session.screenUpdateTimer)
         session.screenUpdateTimer = null
       }
+      if (session.outputFlushTimer) {
+        clearTimeout(session.outputFlushTimer)
+        session.outputFlushTimer = null
+      }
 
-      Bus.publish(Event.Exited, { id, exitCode })
+      void flushOutput(session).finally(() => {
+        Bus.publish(Event.Exited, { id, sessionID: session.info.sessionID, exitCode })
+      })
     })
 
     Bus.publish(Event.Created, { info })
 
     // 等待 shell 启动并发送初始屏幕
     await new Promise((resolve) => setTimeout(resolve, 300))
-    publishScreen(session)
+    await publishScreen(session)
 
     return info
+  }
+
+  function addOutputChunk(session: ActiveSession, chunk: OutputChunk) {
+    session.outputChunks.push(chunk)
+    session.outputChunkBytes += chunk.data.length
+    while (session.outputChunkBytes > BUFFER_LIMIT && session.outputChunks.length > 0) {
+      const removed = session.outputChunks.shift()
+      if (removed) session.outputChunkBytes -= removed.data.length
+    }
+  }
+
+  function scheduleOutputFlush(session: ActiveSession) {
+    if (session.pendingOutput.length >= OUTPUT_FLUSH_BYTES) {
+      void flushOutput(session)
+      return
+    }
+    if (session.outputFlushTimer) return
+    session.outputFlushTimer = setTimeout(() => {
+      session.outputFlushTimer = null
+      void flushOutput(session)
+    }, OUTPUT_FLUSH_INTERVAL)
+  }
+
+  async function flushOutput(session: ActiveSession) {
+    if (session.outputFlushTimer) {
+      clearTimeout(session.outputFlushTimer)
+      session.outputFlushTimer = null
+    }
+    if (!session.pendingOutput) return session.outputPublishChain
+
+    const data = session.pendingOutput
+    session.pendingOutput = ""
+    const seq = ++session.outputSeq
+    addOutputChunk(session, { seq, data })
+
+    session.outputPublishChain = session.outputPublishChain.then(() =>
+      Bus.publish(Event.Output, {
+        id: session.info.id,
+        sessionID: session.info.sessionID,
+        seq,
+        data,
+      }).then(() => undefined),
+    )
+    session.outputPublishChain = session.outputPublishChain.catch((error) => {
+      log.warn("failed to publish terminal output", { id: session.info.id, seq, error })
+    })
+    return session.outputPublishChain
   }
 
   /**
@@ -265,19 +378,24 @@ export namespace AgentTerminal {
     session.screenUpdateTimer = setTimeout(() => {
       session.screenUpdateTimer = null
       session.lastScreenUpdate = Date.now()
-      publishScreen(session)
+      session.screenPublishChain = session.screenPublishChain.then(() => publishScreen(session))
+      session.screenPublishChain = session.screenPublishChain.catch((error) => {
+        log.warn("failed to publish terminal screen", { id: session.info.id, error })
+      })
     }, delay)
   }
 
   /**
    * 发布屏幕更新事件
    */
-  function publishScreen(session: ActiveSession) {
+  async function publishScreen(session: ActiveSession) {
+    await session.buffer.flush()
     const screen = session.buffer.getScreenText()
     const screenAnsi = session.buffer.getScreenAnsi()
     const cursor = session.buffer.getCursor()
-    Bus.publish(Event.Screen, {
+    await Bus.publish(Event.Screen, {
       id: session.info.id,
+      sessionID: session.info.sessionID,
       screen,
       screenAnsi,
       cursor,
@@ -287,9 +405,9 @@ export namespace AgentTerminal {
   /**
    * 向终端发送输入
    */
-  export function write(id: string, data: string): boolean {
+  export function write(id: string, data: string, sessionID: string): boolean {
     const session = state().get(id)
-    if (!session || session.info.status !== "running") {
+    if (!session || !belongsToSession(session, sessionID) || session.info.status !== "running") {
       return false
     }
     session.process.write(data)
@@ -300,64 +418,89 @@ export namespace AgentTerminal {
   /**
    * 获取当前屏幕内容
    */
-  export function getScreen(id: string): string | undefined {
+  export async function getScreen(id: string, sessionID: string): Promise<string | undefined> {
     const session = state().get(id)
-    if (!session) return undefined
+    if (!session || !belongsToSession(session, sessionID)) return undefined
+    await session.buffer.flush()
     return session.buffer.getScreenText()
   }
 
   /**
    * 获取带 ANSI 转义序列的屏幕内容
    */
-  export function getScreenAnsi(id: string): string | undefined {
+  export async function getScreenAnsi(id: string, sessionID: string): Promise<string | undefined> {
     const session = state().get(id)
-    if (!session) return undefined
+    if (!session || !belongsToSession(session, sessionID)) return undefined
+    await session.buffer.flush()
     return session.buffer.getScreenAnsi()
   }
 
   /**
    * 获取屏幕行数组
    */
-  export function getScreenLines(id: string): string[] | undefined {
+  export async function getScreenLines(id: string, sessionID: string): Promise<string[] | undefined> {
     const session = state().get(id)
-    if (!session) return undefined
+    if (!session || !belongsToSession(session, sessionID)) return undefined
+    await session.buffer.flush()
     return session.buffer.getScreen()
   }
 
   /**
    * 获取滚动历史
    */
-  export function getScrollback(id: string, lines?: number): string[] | undefined {
+  export async function getScrollback(id: string, lines: number | undefined, sessionID: string): Promise<string[] | undefined> {
     const session = state().get(id)
-    if (!session) return undefined
+    if (!session || !belongsToSession(session, sessionID)) return undefined
+    await session.buffer.flush()
     return session.buffer.getScrollback(lines)
   }
 
   /**
    * 获取完整视图（历史 + 屏幕）
    */
-  export function getFullView(id: string, historyLines = 50): string | undefined {
+  export async function getFullView(id: string, historyLines: number, sessionID: string): Promise<string | undefined> {
     const session = state().get(id)
-    if (!session) return undefined
+    if (!session || !belongsToSession(session, sessionID)) return undefined
+    await session.buffer.flush()
     return session.buffer.getFullView(historyLines)
   }
 
   /**
    * 获取光标位置
    */
-  export function getCursor(id: string): ScreenBuffer.CursorPosition | undefined {
+  export async function getCursor(id: string, sessionID: string): Promise<ScreenBuffer.CursorPosition | undefined> {
     const session = state().get(id)
-    if (!session) return undefined
+    if (!session || !belongsToSession(session, sessionID)) return undefined
+    await session.buffer.flush()
     return session.buffer.getCursor()
   }
 
   /**
    * 获取终端详细信息
    */
-  export function getScreenInfo(id: string): ScreenBuffer.ScreenInfo | undefined {
+  export async function getScreenInfo(id: string, sessionID: string): Promise<ScreenBuffer.ScreenInfo | undefined> {
     const session = state().get(id)
-    if (!session) return undefined
+    if (!session || !belongsToSession(session, sessionID)) return undefined
+    await session.buffer.flush()
     return session.buffer.getInfo()
+  }
+
+  export async function getScreenSnapshot(
+    id: string,
+    sessionID: string,
+    historyLines?: number,
+  ): Promise<ScreenSnapshot | undefined> {
+    const session = state().get(id)
+    if (!session || !belongsToSession(session, sessionID)) return undefined
+    await session.buffer.flush()
+    return {
+      sessionID: session.info.sessionID,
+      screen: session.buffer.getScreenText(),
+      screenAnsi: session.buffer.getScreenAnsi(),
+      cursor: session.buffer.getCursor(),
+      info: session.buffer.getInfo(),
+      fullView: historyLines === undefined ? undefined : session.buffer.getFullView(historyLines),
+    }
   }
 
   /**
@@ -366,14 +509,16 @@ export namespace AgentTerminal {
   export async function waitFor(
     id: string,
     pattern: string | RegExp,
-    timeout = 30000
+    timeout: number,
+    sessionID: string,
   ): Promise<{ matched: boolean; timedOut: boolean; screen?: string }> {
     const session = state().get(id)
-    if (!session) {
+    if (!session || !belongsToSession(session, sessionID)) {
       return { matched: false, timedOut: false }
     }
 
     const result = await session.buffer.waitForPattern(pattern, timeout)
+    await session.buffer.flush()
     return {
       ...result,
       screen: session.buffer.getScreenText(),
@@ -383,27 +528,28 @@ export namespace AgentTerminal {
   /**
    * 调整终端大小
    */
-  export function resize(id: string, rows: number, cols: number): boolean {
+  export async function resize(id: string, rows: number, cols: number, sessionID: string): Promise<boolean> {
     const session = state().get(id)
-    if (!session || session.info.status !== "running") {
+    if (!session || !belongsToSession(session, sessionID) || session.info.status !== "running") {
       return false
     }
 
     session.process.resize(cols, rows)
-    session.buffer.resize(rows, cols)
+    await session.buffer.resize(rows, cols)
     session.info.rows = rows
     session.info.cols = cols
 
     Bus.publish(Event.Updated, { info: session.info })
+    void publishScreen(session)
     return true
   }
 
   /**
    * 关闭终端
    */
-  export async function close(id: string): Promise<boolean> {
+  export async function close(id: string, sessionID: string): Promise<boolean> {
     const session = state().get(id)
-    if (!session) {
+    if (!session || !belongsToSession(session, sessionID)) {
       return false
     }
 
@@ -412,6 +558,12 @@ export namespace AgentTerminal {
     if (session.screenUpdateTimer) {
       clearTimeout(session.screenUpdateTimer)
     }
+    if (session.outputFlushTimer) {
+      clearTimeout(session.outputFlushTimer)
+      session.outputFlushTimer = null
+    }
+    await flushOutput(session)
+    await session.buffer.flush()
 
     try {
       session.process.kill()
@@ -420,16 +572,37 @@ export namespace AgentTerminal {
     session.buffer.dispose()
     state().delete(id)
 
-    Bus.publish(Event.Closed, { id })
+    Bus.publish(Event.Closed, { id, sessionID: session.info.sessionID })
     return true
   }
 
   /**
    * 获取原始输出缓冲区
    */
-  export function getRawBuffer(id: string): string | undefined {
+  export async function getBuffer(id: string, afterSeq: number | undefined, sessionID: string): Promise<BufferSnapshot | undefined> {
     const session = state().get(id)
-    if (!session) return undefined
-    return session.rawBuffer
+    if (!session || !belongsToSession(session, sessionID)) return undefined
+    await flushOutput(session)
+
+    const latestSeq = session.outputSeq
+    const firstSeq = session.outputChunks[0]?.seq ?? latestSeq + 1
+    if (afterSeq !== undefined) {
+      const reset = afterSeq < firstSeq - 1
+      return {
+        buffer: reset ? session.rawBuffer : "",
+        chunks: reset ? [] : session.outputChunks.filter((chunk) => chunk.seq > afterSeq),
+        latestSeq,
+        firstSeq,
+        reset,
+      }
+    }
+
+    return {
+      buffer: session.rawBuffer,
+      chunks: [],
+      latestSeq,
+      firstSeq,
+      reset: true,
+    }
   }
 }

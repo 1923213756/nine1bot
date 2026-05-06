@@ -36,8 +36,9 @@ Example usage:
       cols: params.cols,
     })
 
-    const screen = AgentTerminal.getScreen(terminal.id) || ""
-    const info = AgentTerminal.getScreenInfo(terminal.id)
+    const snapshot = await AgentTerminal.getScreenSnapshot(terminal.id, ctx.sessionID)
+    const screen = snapshot?.screen || ""
+    const info = snapshot?.info
 
     return {
       title: `Created terminal: ${terminal.name}`,
