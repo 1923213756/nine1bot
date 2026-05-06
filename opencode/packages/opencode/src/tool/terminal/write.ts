@@ -107,7 +107,7 @@ Examples:
     await new Promise((resolve) => setTimeout(resolve, 50))
 
     // Get current screen for feedback
-    const screen = (await AgentTerminal.getScreen(params.id, ctx.sessionID)) || ""
+    const screen = (await AgentTerminal.getScreenSnapshot(params.id, ctx.sessionID))?.screen || ""
 
     return {
       title: `Sent to ${info.name}`,

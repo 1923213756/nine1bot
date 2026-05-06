@@ -49,8 +49,9 @@ export const AgentTerminalRoutes = lazy(() =>
         },
       }),
       validator("param", z.object({ id: z.string() })),
+      validator("query", z.object({ sessionID: z.string() })),
       async (c) => {
-        const info = AgentTerminal.get(c.req.valid("param").id, c.req.query("sessionID"))
+        const info = AgentTerminal.get(c.req.valid("param").id, c.req.valid("query").sessionID)
         if (!info) {
           throw new Storage.NotFoundError({ message: "Agent terminal not found" })
         }
@@ -81,13 +82,13 @@ export const AgentTerminalRoutes = lazy(() =>
         z.object({
           rows: z.number().int().min(1).max(500),
           cols: z.number().int().min(1).max(500),
-          sessionID: z.string().optional(),
+          sessionID: z.string(),
         })
       ),
       async (c) => {
         const { id } = c.req.valid("param")
         const { rows, cols, sessionID } = c.req.valid("json")
-        const success = AgentTerminal.resize(id, rows, cols, sessionID)
+        const success = await AgentTerminal.resize(id, rows, cols, sessionID)
         if (!success) {
           throw new Storage.NotFoundError({ message: "Agent terminal not found or not running" })
         }
@@ -120,19 +121,22 @@ export const AgentTerminalRoutes = lazy(() =>
         },
       }),
       validator("param", z.object({ id: z.string() })),
+      validator("query", z.object({ sessionID: z.string() })),
       async (c) => {
         const { id } = c.req.valid("param")
-        const sessionID = c.req.query("sessionID")
-        const info = AgentTerminal.get(id, sessionID)
-        const screen = await AgentTerminal.getScreen(id, sessionID)
-        const screenAnsi = await AgentTerminal.getScreenAnsi(id, sessionID)
-        const cursor = await AgentTerminal.getCursor(id, sessionID)
+        const { sessionID } = c.req.valid("query")
+        const snapshot = await AgentTerminal.getScreenSnapshot(id, sessionID)
 
-        if (!info || screen === undefined || screenAnsi === undefined || cursor === undefined) {
+        if (!snapshot) {
           throw new Storage.NotFoundError({ message: "Agent terminal not found" })
         }
 
-        return c.json({ sessionID: info.sessionID, screen, screenAnsi, cursor })
+        return c.json({
+          sessionID: snapshot.sessionID,
+          screen: snapshot.screen,
+          screenAnsi: snapshot.screenAnsi,
+          cursor: snapshot.cursor,
+        })
       },
     )
     .get(
@@ -162,14 +166,18 @@ export const AgentTerminalRoutes = lazy(() =>
         },
       }),
       validator("param", z.object({ id: z.string() })),
+      validator("query", z.object({
+        sessionID: z.string(),
+        afterSeq: z.string().optional(),
+      })),
       async (c) => {
         const { id } = c.req.valid("param")
-        const afterSeqRaw = c.req.query("afterSeq")
+        const { sessionID, afterSeq: afterSeqRaw } = c.req.valid("query")
         const afterSeq = afterSeqRaw === undefined ? undefined : Number(afterSeqRaw)
         const buffer = await AgentTerminal.getBuffer(
           id,
           Number.isFinite(afterSeq) ? afterSeq : undefined,
-          c.req.query("sessionID"),
+          sessionID,
         )
 
         if (buffer === undefined) {
@@ -202,7 +210,7 @@ export const AgentTerminalRoutes = lazy(() =>
         "json",
         z.object({
           data: z.string(),
-          sessionID: z.string().optional(),
+          sessionID: z.string(),
         })
       ),
       async (c) => {
@@ -234,8 +242,9 @@ export const AgentTerminalRoutes = lazy(() =>
         },
       }),
       validator("param", z.object({ id: z.string() })),
+      validator("query", z.object({ sessionID: z.string() })),
       async (c) => {
-        const success = await AgentTerminal.close(c.req.valid("param").id, c.req.query("sessionID"))
+        const success = await AgentTerminal.close(c.req.valid("param").id, c.req.valid("query").sessionID)
         if (!success) {
           throw new Storage.NotFoundError({ message: "Agent terminal not found" })
         }

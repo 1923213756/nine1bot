@@ -32,16 +32,18 @@ If the output is too large, the latest terminal content is kept and older histor
       throw new Error(`Terminal session not found: ${params.id}`)
     }
 
-    const screenInfo = await AgentTerminal.getScreenInfo(params.id, ctx.sessionID)
-    let content: string
-
-    if (params.includeHistory) {
-      content = (await AgentTerminal.getFullView(params.id, params.historyLines || 50, ctx.sessionID)) || ""
-    } else {
-      content = (await AgentTerminal.getScreen(params.id, ctx.sessionID)) || ""
+    const snapshot = await AgentTerminal.getScreenSnapshot(
+      params.id,
+      ctx.sessionID,
+      params.includeHistory ? params.historyLines || 50 : undefined,
+    )
+    if (!snapshot) {
+      throw new Error(`Terminal session not found: ${params.id}`)
     }
 
-    const cursor = await AgentTerminal.getCursor(params.id, ctx.sessionID)
+    const screenInfo = snapshot.info
+    const cursor = snapshot.cursor
+    const content = params.includeHistory ? snapshot.fullView || "" : snapshot.screen
     const width = Math.min(screenInfo?.cols || 80, 80)
 
     const stateInfo = [

@@ -70,6 +70,15 @@ export namespace AgentTerminal {
 
   export type BufferSnapshot = z.infer<typeof BufferSnapshot>
 
+  export interface ScreenSnapshot {
+    sessionID: string
+    screen: string
+    screenAnsi: string
+    cursor: ScreenBuffer.CursorPosition
+    info: ScreenBuffer.ScreenInfo
+    fullView?: string
+  }
+
   export const CreateInput = z.object({
     name: z.string().optional(),
     sessionID: z.string(),
@@ -172,14 +181,14 @@ export namespace AgentTerminal {
   /**
    * 获取指定终端信息
    */
-  export function get(id: string, sessionID?: string): Info | undefined {
+  export function get(id: string, sessionID: string): Info | undefined {
     const session = state().get(id)
     if (!session || !belongsToSession(session, sessionID)) return undefined
     return session.info
   }
 
-  function belongsToSession(session: ActiveSession, sessionID?: string) {
-    return Boolean(sessionID && session.info.sessionID === sessionID)
+  function belongsToSession(session: ActiveSession, sessionID: string) {
+    return session.info.sessionID === sessionID
   }
 
   function shellArgs(command: string, inputArgs?: string[]) {
@@ -396,7 +405,7 @@ export namespace AgentTerminal {
   /**
    * 向终端发送输入
    */
-  export function write(id: string, data: string, sessionID?: string): boolean {
+  export function write(id: string, data: string, sessionID: string): boolean {
     const session = state().get(id)
     if (!session || !belongsToSession(session, sessionID) || session.info.status !== "running") {
       return false
@@ -409,7 +418,7 @@ export namespace AgentTerminal {
   /**
    * 获取当前屏幕内容
    */
-  export async function getScreen(id: string, sessionID?: string): Promise<string | undefined> {
+  export async function getScreen(id: string, sessionID: string): Promise<string | undefined> {
     const session = state().get(id)
     if (!session || !belongsToSession(session, sessionID)) return undefined
     await session.buffer.flush()
@@ -419,7 +428,7 @@ export namespace AgentTerminal {
   /**
    * 获取带 ANSI 转义序列的屏幕内容
    */
-  export async function getScreenAnsi(id: string, sessionID?: string): Promise<string | undefined> {
+  export async function getScreenAnsi(id: string, sessionID: string): Promise<string | undefined> {
     const session = state().get(id)
     if (!session || !belongsToSession(session, sessionID)) return undefined
     await session.buffer.flush()
@@ -429,7 +438,7 @@ export namespace AgentTerminal {
   /**
    * 获取屏幕行数组
    */
-  export async function getScreenLines(id: string, sessionID?: string): Promise<string[] | undefined> {
+  export async function getScreenLines(id: string, sessionID: string): Promise<string[] | undefined> {
     const session = state().get(id)
     if (!session || !belongsToSession(session, sessionID)) return undefined
     await session.buffer.flush()
@@ -439,7 +448,7 @@ export namespace AgentTerminal {
   /**
    * 获取滚动历史
    */
-  export async function getScrollback(id: string, lines?: number, sessionID?: string): Promise<string[] | undefined> {
+  export async function getScrollback(id: string, lines: number | undefined, sessionID: string): Promise<string[] | undefined> {
     const session = state().get(id)
     if (!session || !belongsToSession(session, sessionID)) return undefined
     await session.buffer.flush()
@@ -449,7 +458,7 @@ export namespace AgentTerminal {
   /**
    * 获取完整视图（历史 + 屏幕）
    */
-  export async function getFullView(id: string, historyLines = 50, sessionID?: string): Promise<string | undefined> {
+  export async function getFullView(id: string, historyLines: number, sessionID: string): Promise<string | undefined> {
     const session = state().get(id)
     if (!session || !belongsToSession(session, sessionID)) return undefined
     await session.buffer.flush()
@@ -459,7 +468,7 @@ export namespace AgentTerminal {
   /**
    * 获取光标位置
    */
-  export async function getCursor(id: string, sessionID?: string): Promise<ScreenBuffer.CursorPosition | undefined> {
+  export async function getCursor(id: string, sessionID: string): Promise<ScreenBuffer.CursorPosition | undefined> {
     const session = state().get(id)
     if (!session || !belongsToSession(session, sessionID)) return undefined
     await session.buffer.flush()
@@ -469,11 +478,29 @@ export namespace AgentTerminal {
   /**
    * 获取终端详细信息
    */
-  export async function getScreenInfo(id: string, sessionID?: string): Promise<ScreenBuffer.ScreenInfo | undefined> {
+  export async function getScreenInfo(id: string, sessionID: string): Promise<ScreenBuffer.ScreenInfo | undefined> {
     const session = state().get(id)
     if (!session || !belongsToSession(session, sessionID)) return undefined
     await session.buffer.flush()
     return session.buffer.getInfo()
+  }
+
+  export async function getScreenSnapshot(
+    id: string,
+    sessionID: string,
+    historyLines?: number,
+  ): Promise<ScreenSnapshot | undefined> {
+    const session = state().get(id)
+    if (!session || !belongsToSession(session, sessionID)) return undefined
+    await session.buffer.flush()
+    return {
+      sessionID: session.info.sessionID,
+      screen: session.buffer.getScreenText(),
+      screenAnsi: session.buffer.getScreenAnsi(),
+      cursor: session.buffer.getCursor(),
+      info: session.buffer.getInfo(),
+      fullView: historyLines === undefined ? undefined : session.buffer.getFullView(historyLines),
+    }
   }
 
   /**
@@ -482,8 +509,8 @@ export namespace AgentTerminal {
   export async function waitFor(
     id: string,
     pattern: string | RegExp,
-    timeout = 30000,
-    sessionID?: string,
+    timeout: number,
+    sessionID: string,
   ): Promise<{ matched: boolean; timedOut: boolean; screen?: string }> {
     const session = state().get(id)
     if (!session || !belongsToSession(session, sessionID)) {
@@ -501,14 +528,14 @@ export namespace AgentTerminal {
   /**
    * 调整终端大小
    */
-  export function resize(id: string, rows: number, cols: number, sessionID?: string): boolean {
+  export async function resize(id: string, rows: number, cols: number, sessionID: string): Promise<boolean> {
     const session = state().get(id)
     if (!session || !belongsToSession(session, sessionID) || session.info.status !== "running") {
       return false
     }
 
     session.process.resize(cols, rows)
-    session.buffer.resize(rows, cols)
+    await session.buffer.resize(rows, cols)
     session.info.rows = rows
     session.info.cols = cols
 
@@ -520,7 +547,7 @@ export namespace AgentTerminal {
   /**
    * 关闭终端
    */
-  export async function close(id: string, sessionID?: string): Promise<boolean> {
+  export async function close(id: string, sessionID: string): Promise<boolean> {
     const session = state().get(id)
     if (!session || !belongsToSession(session, sessionID)) {
       return false
@@ -536,6 +563,7 @@ export namespace AgentTerminal {
       session.outputFlushTimer = null
     }
     await flushOutput(session)
+    await session.buffer.flush()
 
     try {
       session.process.kill()
@@ -551,7 +579,7 @@ export namespace AgentTerminal {
   /**
    * 获取原始输出缓冲区
    */
-  export async function getBuffer(id: string, afterSeq?: number, sessionID?: string): Promise<BufferSnapshot | undefined> {
+  export async function getBuffer(id: string, afterSeq: number | undefined, sessionID: string): Promise<BufferSnapshot | undefined> {
     const session = state().get(id)
     if (!session || !belongsToSession(session, sessionID)) return undefined
     await flushOutput(session)

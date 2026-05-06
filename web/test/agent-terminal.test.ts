@@ -239,14 +239,15 @@ describe('useAgentTerminal', () => {
     expect(terminal.activeScreen.value?.latestSeq).toBe(3)
   })
 
-  it('uses the authoritative screen for reset recovery and clears reset token on later output', async () => {
+  it('keeps retained buffer data for reset recovery and clears reset token on later output', async () => {
     const terminal = useAgentTerminal()
     terminal.setSessionContext('ses_a')
     await settle()
 
     await terminal.recoverTerminalOutput('agt_a', -1)
 
-    expect(terminal.activeScreen.value?.outputData).toBe('ready')
+    expect(terminal.activeScreen.value?.screenAnsi).toBe('ready')
+    expect(terminal.activeScreen.value?.outputData).toBe('trimmed-tail')
     expect(terminal.activeScreen.value?.outputResetToken).toBeGreaterThan(0)
 
     terminal.handleSSEEvent({

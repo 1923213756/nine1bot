@@ -2515,9 +2515,8 @@ export const agentTerminalApi = {
   },
 
   // 获取终端信息
-  async get(id: string, sessionID?: string): Promise<AgentTerminalInfo> {
-    const params = new URLSearchParams()
-    if (sessionID) params.set('sessionID', sessionID)
+  async get(id: string, sessionID: string): Promise<AgentTerminalInfo> {
+    const params = new URLSearchParams({ sessionID })
     const suffix = params.toString() ? `?${params}` : ''
     const res = await fetchWithTimeout(`${BASE_URL}/agent-terminal/${encodeURIComponent(id)}${suffix}`)
     if (!res.ok) {
@@ -2527,11 +2526,11 @@ export const agentTerminalApi = {
   },
 
   // 调整终端大小
-  async resize(id: string, rows: number, cols: number, sessionID?: string): Promise<boolean> {
+  async resize(id: string, rows: number, cols: number, sessionID: string): Promise<boolean> {
     const res = await fetchWithTimeout(`${BASE_URL}/agent-terminal/${encodeURIComponent(id)}/resize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rows, cols, ...(sessionID ? { sessionID } : {}) })
+      body: JSON.stringify({ rows, cols, sessionID })
     })
     if (!res.ok) {
       throw new Error('Failed to resize agent terminal')
@@ -2540,9 +2539,8 @@ export const agentTerminalApi = {
   },
 
   // 获取终端屏幕内容
-  async getScreen(id: string, sessionID?: string): Promise<{ sessionID: string; screen: string; screenAnsi: string; cursor: { row: number; col: number } }> {
-    const params = new URLSearchParams()
-    if (sessionID) params.set('sessionID', sessionID)
+  async getScreen(id: string, sessionID: string): Promise<{ sessionID: string; screen: string; screenAnsi: string; cursor: { row: number; col: number } }> {
+    const params = new URLSearchParams({ sessionID })
     const suffix = params.toString() ? `?${params}` : ''
     const res = await fetchWithTimeout(`${BASE_URL}/agent-terminal/${encodeURIComponent(id)}/screen${suffix}`)
     if (!res.ok) {
@@ -2552,9 +2550,8 @@ export const agentTerminalApi = {
   },
 
   // 获取终端原始缓冲区（用于初始化时回放历史）
-  async getBuffer(id: string, sessionID?: string, afterSeq?: number): Promise<AgentTerminalBuffer> {
-    const params = new URLSearchParams()
-    if (sessionID) params.set('sessionID', sessionID)
+  async getBuffer(id: string, sessionID: string, afterSeq?: number): Promise<AgentTerminalBuffer> {
+    const params = new URLSearchParams({ sessionID })
     if (afterSeq !== undefined) params.set('afterSeq', String(afterSeq))
     const suffix = params.toString() ? `?${params}` : ''
     const res = await fetchWithTimeout(`${BASE_URL}/agent-terminal/${encodeURIComponent(id)}/buffer${suffix}`)
@@ -2565,11 +2562,11 @@ export const agentTerminalApi = {
   },
 
   // 向终端发送输入
-  async write(id: string, data: string, sessionID?: string): Promise<boolean> {
+  async write(id: string, data: string, sessionID: string): Promise<boolean> {
     const res = await fetchWithTimeout(`${BASE_URL}/agent-terminal/${encodeURIComponent(id)}/write`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data, ...(sessionID ? { sessionID } : {}) })
+      body: JSON.stringify({ data, sessionID })
     })
     if (!res.ok) {
       throw new Error('Failed to write to agent terminal')
@@ -2578,9 +2575,8 @@ export const agentTerminalApi = {
   },
 
   // 关闭终端
-  async close(id: string, sessionID?: string): Promise<boolean> {
-    const params = new URLSearchParams()
-    if (sessionID) params.set('sessionID', sessionID)
+  async close(id: string, sessionID: string): Promise<boolean> {
+    const params = new URLSearchParams({ sessionID })
     const suffix = params.toString() ? `?${params}` : ''
     const res = await fetchWithTimeout(`${BASE_URL}/agent-terminal/${encodeURIComponent(id)}${suffix}`, {
       method: 'DELETE'

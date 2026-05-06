@@ -113,7 +113,7 @@ async function recoverTerminalOutput(id: string, afterSeq?: number) {
         ...current,
         ...(screenData || {}),
         sessionID,
-        outputData: screenData?.screenAnsi ?? snapshot.buffer,
+        outputData: snapshot.buffer,
         outputSeq: snapshot.latestSeq,
         outputResetToken: ++resetTokenCounter,
         latestSeq: snapshot.latestSeq,
@@ -339,7 +339,9 @@ export function useAgentTerminal() {
   async function writeToTerminal(id: string, data: string): Promise<boolean> {
     try {
       const terminal = terminals.value.get(id)
-      return await agentTerminalApi.write(id, data, terminal?.sessionID || currentSessionID.value || undefined)
+      const sessionID = terminal?.sessionID || currentSessionID.value
+      if (!sessionID) return false
+      return await agentTerminalApi.write(id, data, sessionID)
     } catch (error) {
       console.error('Failed to write to terminal:', error)
       return false
@@ -349,7 +351,9 @@ export function useAgentTerminal() {
   async function closeTerminal(id: string): Promise<boolean> {
     try {
       const terminal = terminals.value.get(id)
-      return await agentTerminalApi.close(id, terminal?.sessionID || currentSessionID.value || undefined)
+      const sessionID = terminal?.sessionID || currentSessionID.value
+      if (!sessionID) return false
+      return await agentTerminalApi.close(id, sessionID)
     } catch (error) {
       console.error('Failed to close terminal:', error)
       return false

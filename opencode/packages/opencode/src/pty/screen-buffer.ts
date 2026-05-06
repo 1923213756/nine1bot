@@ -283,10 +283,14 @@ export namespace ScreenBuffer {
     /**
      * 调整终端大小
      */
-    resize(rows: number, cols: number): void {
-      this.term.resize(cols, rows)
-      this.config.rows = rows
-      this.config.cols = cols
+    async resize(rows: number, cols: number): Promise<void> {
+      const next = this.writeChain.then(() => {
+        this.term.resize(cols, rows)
+        this.config.rows = rows
+        this.config.cols = cols
+      })
+      this.writeChain = next.catch(() => undefined)
+      return next
     }
 
     /**

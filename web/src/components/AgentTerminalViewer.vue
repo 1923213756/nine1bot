@@ -247,6 +247,23 @@ function updateScreen(screen: string) {
   }
 }
 
+function applyScreenSnapshot(screen: string) {
+  if (!terminal || !screen) return
+
+  terminal.write('\x1b[H\x1b[2J')
+  const lines = screen.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    terminal.write(lines[i])
+    if (i < lines.length - 1) {
+      terminal.write('\r\n')
+    }
+  }
+
+  if (props.cursor) {
+    terminal.write(`\x1b[${props.cursor.row + 1};${props.cursor.col + 1}H`)
+  }
+}
+
 function flushPendingOutput() {
   while (pendingOutput.length > 0) {
     applyOutput(pendingOutput.shift()!)
@@ -257,7 +274,10 @@ function applyOutput(item: { seq?: number; data: string; resetToken?: number }) 
   if (!terminal) return
 
   if (item.resetToken) {
-    updateScreen(item.data || props.screenAnsi)
+    terminal.clear()
+    terminal.reset()
+    if (item.data) terminal.write(item.data)
+    applyScreenSnapshot(props.screenAnsi)
     lastAppliedSeq = item.seq ?? lastAppliedSeq
     return
   }
