@@ -187,6 +187,7 @@ async function mountFrame(): Promise<void> {
 }
 
 async function refreshConnection(options: { mount?: boolean } = {}): Promise<void> {
+  const wasReachable = serverReachable
   setRelayFormValue(currentServerOrigin)
   const result = await testRelayOrigin(currentServerOrigin)
   serverReachable = result.ok
@@ -198,7 +199,7 @@ async function refreshConnection(options: { mount?: boolean } = {}): Promise<voi
     setMessage('settings-message', result.message, 'error')
   }
 
-  if (options.mount) {
+  if (options.mount || (!wasReachable && serverReachable)) {
     await mountFrame()
   }
   broadcastRelayStatus(result.message)
