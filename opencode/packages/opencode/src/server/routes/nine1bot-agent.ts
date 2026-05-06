@@ -27,6 +27,11 @@ import { Provider } from "@/provider/provider"
 import { Storage } from "@/storage/storage"
 import { ulid } from "ulid"
 import { prepareFeishuControllerMessageContext } from "../../../../../../packages/nine1bot/src/platform/feishu-context"
+import {
+  type BrowserExtensionConfig,
+  isBrowserExtensionEntry,
+  readBrowserExtensionConfig,
+} from "../nine1bot-browser-extension-config"
 
 const log = Log.create({ service: "server.nine1bot-agent" })
 
@@ -196,12 +201,60 @@ function parsePage(input: unknown) {
   return parsed.success ? parsed.data : undefined
 }
 
+function clientFromEntry(entry?: RuntimeControllerProtocol.Entry): Session.Client | undefined {
+  if (!entry?.source) return undefined
+  const client: Session.Client = { source: entry.source }
+  if (entry.mode) client.mode = entry.mode
+  if (entry.platform) client.platform = entry.platform
+  return client
+}
+
+function unique(values: string[] = []) {
+  return [...new Set(values.filter(Boolean))]
+}
+
+function mergeBrowserExtensionResources(
+  current: RuntimeControllerProtocol.ResourceSelection,
+  config: BrowserExtensionConfig,
+): RuntimeControllerProtocol.ResourceSelection {
+  if (!config.mcpServers?.length && !config.skills?.length) return current
+
+  const merged: NonNullable<RuntimeControllerProtocol.ResourceSelection> = {
+    ...(current ?? {}),
+  }
+  if (config.mcpServers?.length) {
+    merged.mcp = {
+      ...(merged.mcp ?? {}),
+      servers: unique([...(merged.mcp?.servers ?? []), ...config.mcpServers]),
+    }
+  }
+  if (config.skills?.length) {
+    merged.skills = {
+      ...(merged.skills ?? {}),
+      skills: unique([...(merged.skills?.skills ?? []), ...config.skills]),
+    }
+  }
+  return merged
+}
+
 export async function createControllerSession(input?: RuntimeControllerProtocol.SessionCreateRequest) {
-  const model = input?.sessionChoice?.model
+  const browserExtensionEntry = isBrowserExtensionEntry(input?.entry)
+  const sidepanelConfig = browserExtensionEntry
+    ? await readBrowserExtensionConfig()
+    : {}
+  const model = input?.sessionChoice?.model ?? (browserExtensionEntry ? sidepanelConfig.model : undefined)
+  const resources = browserExtensionEntry
+    ? mergeBrowserExtensionResources(input?.sessionChoice?.resources, sidepanelConfig)
+    : input?.sessionChoice?.resources
+  const sessionChoice = model && !input?.sessionChoice?.model
+    ? { ...(input?.sessionChoice ?? {}), model, resources }
+    : resources
+      ? { ...(input?.sessionChoice ?? {}), resources }
+    : input?.sessionChoice
   const permission = parsePermission(input?.permission)
   const template = await ControllerTemplateResolver.resolve({
     entry: input?.entry,
-    sessionChoice: input?.sessionChoice,
+    sessionChoice,
     clientCapabilities: input?.clientCapabilities,
     page: parsePage(input?.page),
   })
@@ -209,7 +262,7 @@ export async function createControllerSession(input?: RuntimeControllerProtocol.
     directory: input?.directory ?? Instance.directory,
     permission,
     source: "new-session",
-    agentName: input?.sessionChoice?.agent,
+    agentName: sessionChoice?.agent,
     profileTemplate: template.profileTemplate,
   })
   const session = await Session.createNext({
@@ -218,6 +271,7 @@ export async function createControllerSession(input?: RuntimeControllerProtocol.
     permission,
     runtimeProfile: compiledProfile,
     runtimeCurrentModel: model ? SessionRuntimeProfile.currentModel(model, "session-choice") : undefined,
+    client: clientFromEntry(input?.entry),
   })
   const profile = input?.debug?.profileSnapshot ? await SessionRuntimeProfile.read(session) : undefined
   return {
@@ -232,6 +286,28 @@ export async function createControllerSession(input?: RuntimeControllerProtocol.
     resourcesPreview: template.resourcesPreview,
     audit: template.audit,
     profileSnapshot: profile,
+  }
+}
+
+async function isBrowserExtensionSession(sessionID: string, entry?: RuntimeControllerProtocol.Entry) {
+  if (isBrowserExtensionEntry(entry)) return true
+  const session = await Session.get(sessionID).catch(() => undefined)
+  return session?.client?.source === "browser-extension" || session?.client?.mode === "browser-sidepanel"
+}
+
+async function applyBrowserExtensionPrompt(
+  sessionID: string,
+  body: RuntimeControllerProtocol.MessageSendRequest,
+): Promise<RuntimeControllerProtocol.MessageSendRequest> {
+  if (!(await isBrowserExtensionSession(sessionID, body.entry))) return body
+
+  const config = await readBrowserExtensionConfig()
+  const prompt = config.prompt?.trim()
+  if (!prompt) return body
+
+  return {
+    ...body,
+    system: [prompt, body.system?.trim()].filter(Boolean).join("\n\n"),
   }
 }
 
@@ -277,7 +353,8 @@ export async function sendControllerMessage(sessionID: string, body: RuntimeCont
   let contextEnrichment: RuntimeControllerProtocol.ContextEnrichmentSummary | undefined
   try {
     SessionPrompt.assertNotBusy(sessionID)
-    const prepared = await prepareFeishuControllerMessageContext(body, {
+    const configuredBody = await applyBrowserExtensionPrompt(sessionID, body)
+    const prepared = await prepareFeishuControllerMessageContext(configuredBody, {
       cacheScope: sessionID,
     })
     preparedBody = prepared.body

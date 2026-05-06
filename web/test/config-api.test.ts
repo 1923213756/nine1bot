@@ -292,6 +292,54 @@ describe('web config APIs', () => {
     expect(calls[2].body).toEqual({ content: 'Prefer focused tests' })
   })
 
+  it('uses browser extension config endpoints for side panel defaults', async () => {
+    installFetchMock((url, init) => {
+      const method = init?.method || 'GET'
+      if (url === '/config/nine1bot/browser-extension' && method === 'GET') {
+        return jsonResponse({
+          model: { providerID: 'openai', modelID: 'gpt-5' },
+          prompt: 'Use browser context.',
+          mcpServers: ['filesystem'],
+          skills: ['browser-review'],
+        })
+      }
+      if (url === '/config/nine1bot/browser-extension' && method === 'PATCH') {
+        return jsonResponse({
+          model: { providerID: 'anthropic', modelID: 'claude-sonnet-4.5' },
+          mcpServers: ['gitlab'],
+        })
+      }
+      return jsonResponse({})
+    })
+
+    expect(await nine1botConfigApi.getBrowserExtension()).toEqual({
+      model: { providerID: 'openai', modelID: 'gpt-5' },
+      prompt: 'Use browser context.',
+      mcpServers: ['filesystem'],
+      skills: ['browser-review'],
+    })
+    expect(await nine1botConfigApi.updateBrowserExtension({
+      model: { providerID: 'anthropic', modelID: 'claude-sonnet-4.5' },
+      prompt: null,
+      mcpServers: ['gitlab'],
+      skills: [],
+    })).toEqual({
+      model: { providerID: 'anthropic', modelID: 'claude-sonnet-4.5' },
+      mcpServers: ['gitlab'],
+    })
+
+    expect(callSummary()).toEqual([
+      ['GET', '/config/nine1bot/browser-extension'],
+      ['PATCH', '/config/nine1bot/browser-extension'],
+    ])
+    expect(calls[1].body).toEqual({
+      model: { providerID: 'anthropic', modelID: 'claude-sonnet-4.5' },
+      prompt: null,
+      mcpServers: ['gitlab'],
+      skills: [],
+    })
+  })
+
   it('uses platform manager endpoints for platform adapter settings', async () => {
     installFetchMock((url, init) => {
       const method = init?.method || 'GET'

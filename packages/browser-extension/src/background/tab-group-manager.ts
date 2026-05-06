@@ -1,7 +1,10 @@
+import { ACTIVE_NINE1_TAB_GROUP_STORAGE_KEY } from '../shared/tab-group'
+
 const NINE1_TAB_GROUP_TITLE = 'Nine1Bot'
 const NINE1_TAB_GROUP_COLOR: chrome.tabGroups.ColorEnum = 'blue'
 
 let cleanupInstalled = false
+let activeNine1GroupId: number | null = null
 
 function formatGroupTitle(taskLabel?: string): string {
   if (!taskLabel) return NINE1_TAB_GROUP_TITLE
@@ -19,6 +22,15 @@ async function getGroupIdForTab(tabId: number): Promise<number | null> {
   }
 }
 
+async function groupExists(groupId: number): Promise<boolean> {
+  try {
+    await chrome.tabGroups.get(groupId)
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function updateGroup(groupId: number, options: {
   collapsed?: boolean
   taskLabel?: string
@@ -30,15 +42,63 @@ async function updateGroup(groupId: number, options: {
   })
 }
 
+async function persistActiveGroup(groupId: number | null): Promise<void> {
+  activeNine1GroupId = groupId
+  try {
+    if (groupId === null) {
+      await chrome.storage.local.remove(ACTIVE_NINE1_TAB_GROUP_STORAGE_KEY)
+    } else {
+      await chrome.storage.local.set({ [ACTIVE_NINE1_TAB_GROUP_STORAGE_KEY]: groupId })
+    }
+  } catch {
+    // Storage is only a coordination convenience for side panel pages.
+  }
+}
+
+export async function getActiveNine1GroupId(): Promise<number | null> {
+  if (activeNine1GroupId !== null && await groupExists(activeNine1GroupId)) {
+    return activeNine1GroupId
+  }
+
+  try {
+    const stored = await chrome.storage.local.get({ [ACTIVE_NINE1_TAB_GROUP_STORAGE_KEY]: -1 })
+    const groupId = stored[ACTIVE_NINE1_TAB_GROUP_STORAGE_KEY]
+    if (typeof groupId === 'number' && groupId >= 0 && await groupExists(groupId)) {
+      activeNine1GroupId = groupId
+      return groupId
+    }
+  } catch {
+    // ignore storage failures
+  }
+
+  await persistActiveGroup(null)
+  return null
+}
+
+export async function createDedicatedNine1Group(tabId: number, taskLabel?: string): Promise<number | null> {
+  try {
+    const groupId = await chrome.tabs.group({ tabIds: [tabId] })
+    await updateGroup(groupId, { collapsed: false, taskLabel })
+    await persistActiveGroup(groupId)
+    return groupId
+  } catch {
+    return null
+  }
+}
+
 export async function addTabToNine1Group(tabId: number, taskLabel?: string): Promise<number | null> {
   try {
-    const existingGroupId = await getGroupIdForTab(tabId)
-    if (existingGroupId !== null) {
-      await updateGroup(existingGroupId, { collapsed: false, taskLabel })
-      return existingGroupId
+    let groupId = await getActiveNine1GroupId()
+    if (groupId === null) {
+      return await createDedicatedNine1Group(tabId, taskLabel)
     }
 
-    const groupId = await chrome.tabs.group({ tabIds: [tabId] })
+    const existingGroupId = await getGroupIdForTab(tabId)
+    if (existingGroupId !== groupId) {
+      groupId = await chrome.tabs.group({ tabIds: [tabId], groupId })
+      await persistActiveGroup(groupId)
+    }
+
     await updateGroup(groupId, { collapsed: false, taskLabel })
     return groupId
   } catch {
@@ -46,11 +106,26 @@ export async function addTabToNine1Group(tabId: number, taskLabel?: string): Pro
   }
 }
 
+export async function isTabInActiveNine1Group(tabId: number): Promise<boolean> {
+  const activeGroupId = await getActiveNine1GroupId()
+  if (activeGroupId === null) return false
+  return await getGroupIdForTab(tabId) === activeGroupId
+}
+
+export async function getTabsInActiveNine1Group(): Promise<chrome.tabs.Tab[]> {
+  const groupId = await getActiveNine1GroupId()
+  if (groupId === null) return []
+  try {
+    return await chrome.tabs.query({ groupId })
+  } catch {
+    return []
+  }
+}
+
 export async function getTabsInGroupByTab(tabId: number): Promise<number[]> {
   try {
-    const groupId = await getGroupIdForTab(tabId)
-    if (groupId === null) return [tabId]
-    const tabs = await chrome.tabs.query({ groupId })
+    if (!await isTabInActiveNine1Group(tabId)) return [tabId]
+    const tabs = await getTabsInActiveNine1Group()
     const tabIds = tabs
       .map((tab) => tab.id)
       .filter((candidate): candidate is number => typeof candidate === 'number')
@@ -60,9 +135,21 @@ export async function getTabsInGroupByTab(tabId: number): Promise<number[]> {
   }
 }
 
+export async function getDefaultNine1Tab(windowId?: number): Promise<chrome.tabs.Tab | null> {
+  const tabs = await getTabsInActiveNine1Group()
+  if (tabs.length === 0) return null
+
+  const activeInWindow = tabs.find((tab) => tab.active && (windowId === undefined || tab.windowId === windowId))
+  if (activeInWindow) return activeInWindow
+
+  const active = tabs.find((tab) => tab.active)
+  return active ?? tabs[0] ?? null
+}
+
 export async function setNine1GroupActive(tabId: number, taskLabel?: string): Promise<void> {
   try {
-    const groupId = await addTabToNine1Group(tabId, taskLabel)
+    if (!await isTabInActiveNine1Group(tabId)) return
+    const groupId = await getActiveNine1GroupId()
     if (groupId === null) return
     await updateGroup(groupId, { collapsed: false, taskLabel })
   } catch {
@@ -72,11 +159,21 @@ export async function setNine1GroupActive(tabId: number, taskLabel?: string): Pr
 
 export async function setNine1GroupIdle(tabId: number): Promise<void> {
   try {
-    const groupId = await getGroupIdForTab(tabId)
+    if (!await isTabInActiveNine1Group(tabId)) return
+    const groupId = await getActiveNine1GroupId()
     if (groupId === null) return
     await updateGroup(groupId, { collapsed: true })
   } catch {
     // ignore tab/group lifecycle races
+  }
+}
+
+async function cleanupMissingActiveGroup(): Promise<void> {
+  const groupId = await getActiveNine1GroupId()
+  if (groupId === null) return
+  const tabs = await getTabsInActiveNine1Group()
+  if (tabs.length === 0) {
+    await persistActiveGroup(null)
   }
 }
 
@@ -85,6 +182,8 @@ export function setupTabGroupCleanup(): void {
   cleanupInstalled = true
 
   chrome.tabs.onRemoved.addListener(() => {
-    // Tab groups self-heal as tabs close; this keeps setup idempotent.
+    cleanupMissingActiveGroup().catch(() => {
+      // Tab groups self-heal as tabs close; this keeps setup idempotent.
+    })
   })
 }

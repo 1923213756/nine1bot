@@ -4,9 +4,11 @@ import { useSession } from './composables/useSession'
 import { useFiles } from './composables/useFiles'
 import { useSettings } from './composables/useSettings'
 import { useAppMode } from './composables/useAppMode'
+import { useClientSurface } from './composables/useClientSurface'
 import { useSessionMode } from './composables/useSessionMode'
 import { useProjects } from './composables/useProjects'
 import { useGlobalRecentSessions } from './composables/useGlobalRecentSessions'
+import { collectActivePageContext, type RequestPagePayload } from './api/page-context'
 import { api, type GlobalSSEEventEnvelope, type Session } from './api/client'
 import Header from './components/Header.vue'
 import Sidebar from './components/Sidebar.vue'
@@ -17,6 +19,7 @@ import SearchOverlay from './components/SearchOverlay.vue'
 import ProjectsPage from './components/ProjectsPage.vue'
 import AutomationsPage from './components/AutomationsPage.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
+import BrowserExtensionSettingsPanel from './components/BrowserExtensionSettingsPanel.vue'
 import FileViewer from './components/FileViewer.vue'
 import TodoList from './components/TodoList.vue'
 import PlanPanel from './components/PlanPanel.vue'
@@ -24,6 +27,7 @@ import McpProjectPanel from './components/McpProjectPanel.vue'
 import RightPanel from './components/RightPanel.vue'
 import { useAgentTerminal } from './composables/useAgentTerminal'
 import { useFilePreview } from './composables/useFilePreview'
+import { Globe2, Plus, RefreshCw, Settings, Terminal } from 'lucide-vue-next'
 
 import { MAX_PARALLEL_AGENTS } from './composables/useParallelSessions'
 
@@ -79,7 +83,7 @@ const {
 } = useSession()
 
 // Agent 终端
-const { handleSSEEvent: handleTerminalEvent } = useAgentTerminal()
+const { handleSSEEvent: handleTerminalEvent, terminals: agentTerminals } = useAgentTerminal()
 
 // 文件预览
 const { handleSSEEvent: handlePreviewEvent } = useFilePreview()
@@ -99,6 +103,8 @@ const {
 } = useFiles()
 
 const { showSettings, openSettings, closeSettings, activeTab: settingsTab, currentProvider, currentModel, providers, selectModel: settingsSelectModel, loadProviders, loadConfig } = useSettings()
+
+const { isBrowserExtension } = useClientSurface()
 
 // App mode (chat / agent)
 const { mode: appMode, setMode: setAppMode } = useAppMode()
@@ -152,6 +158,16 @@ const showAutomationsPage = ref(false)
 
 const sidebarCollapsed = ref(false)
 const projectContextRevision = ref(0)
+const extensionPageContext = ref<RequestPagePayload | undefined>()
+const extensionPageLoading = ref(false)
+const extensionRelayStatus = ref({
+  origin: '',
+  bootstrapUrl: '',
+  extensionUrl: '',
+  serverReachable: true,
+  relayConnected: true,
+  message: '',
+})
 
 const sidebarSessions = computed(() => {
   if (appMode.value !== 'agent') {
@@ -188,6 +204,35 @@ const isEmptyState = computed(() =>
   !showMetricsPage.value &&
   !showAutomationsPage.value
 )
+
+const extensionPageLabel = computed(() => {
+  if (extensionPageLoading.value) return 'Checking current page...'
+  const page = extensionPageContext.value
+  if (!page) return 'No page context'
+  return page.title || page.url || page.platform
+})
+
+const extensionPageDetail = computed(() => {
+  const page = extensionPageContext.value
+  if (!page) return 'Open a supported page to include browser context.'
+  const parts = [page.platform, page.pageType, page.url].filter(Boolean)
+  return parts.join(' · ')
+})
+
+const extensionConnectionIssue = computed(() =>
+  isBrowserExtension.value && (!extensionRelayStatus.value.serverReachable || !extensionRelayStatus.value.relayConnected)
+)
+
+const extensionConnectionText = computed(() => {
+  if (!extensionRelayStatus.value.serverReachable) return '未连接到 Nine1Bot 主进程'
+  if (!extensionRelayStatus.value.relayConnected) return '浏览器 relay 正在重连，页面对话可继续，浏览器控制暂不可用'
+  return ''
+})
+
+const extensionTerminals = computed(() => {
+  if (!isBrowserExtension.value || !currentSession.value) return []
+  return agentTerminals.value.filter((terminal) => terminal.sessionID === currentSession.value?.id)
+})
 
 // Handle model selection from InputBox
 async function handleSelectModel(providerId: string, modelId: string) {
@@ -251,6 +296,85 @@ function subscribeGlobalEvents() {
   })
 }
 
+async function refreshExtensionPageContext() {
+  if (!isBrowserExtension.value) return
+  extensionPageLoading.value = true
+  try {
+    extensionPageContext.value = await collectActivePageContext(1200)
+  } catch (error) {
+    console.error('Failed to collect extension page context:', error)
+    extensionPageContext.value = undefined
+  } finally {
+    extensionPageLoading.value = false
+  }
+}
+
+function handleExtensionParentMessage(event: MessageEvent) {
+  if (!isBrowserExtension.value || event.source !== window.parent) return
+  const message = event.data as {
+    type?: unknown
+    settings?: {
+      origin?: string
+      bootstrapUrl?: string
+      extensionUrl?: string
+      serverReachable?: boolean
+      relayConnected?: boolean
+      message?: string
+    }
+  } | undefined
+  if (message?.type === 'nine1bot.activePageChanged') {
+    void refreshExtensionPageContext()
+    return
+  }
+  if (message?.type === 'nine1bot.relayStatus' && message.settings) {
+    extensionRelayStatus.value = {
+      origin: message.settings.origin || '',
+      bootstrapUrl: message.settings.bootstrapUrl || '',
+      extensionUrl: message.settings.extensionUrl || '',
+      serverReachable: message.settings.serverReachable !== false,
+      relayConnected: message.settings.relayConnected !== false,
+      message: message.settings.message || '',
+    }
+  }
+}
+
+function initialSessionIdFromUrl(): string {
+  if (typeof window === 'undefined') return ''
+  const params = new URLSearchParams(window.location.search)
+  return params.get('session') || params.get('sessionId') || ''
+}
+
+async function selectSessionById(sessionId: string): Promise<boolean> {
+  if (!sessionId) return false
+  let session =
+    sidebarSessions.value.find((item) => item.id === sessionId) ||
+    sessions.value.find((item) => item.id === sessionId)
+
+  if (!session) {
+    await loadSessions()
+    session =
+      sidebarSessions.value.find((item) => item.id === sessionId) ||
+      sessions.value.find((item) => item.id === sessionId)
+  }
+
+  if (!session) return false
+
+  showProjectsPage.value = false
+  showMetricsPage.value = false
+  showAutomationsPage.value = false
+  await selectSession(session)
+  return true
+}
+
+function openCurrentExtensionSessionInMainWeb() {
+  const sessionId = currentSession.value?.id
+  if (!sessionId) return
+  window.parent.postMessage({
+    type: 'nine1bot.openMainSession',
+    sessionID: sessionId,
+  }, '*')
+}
+
 onMounted(async () => {
   // 先注册事件处理器，确保在 SSE 连接建立时能接收到 server.connected 事件
   unregisterTerminalHandler = registerEventHandler(handleTerminalEvent)
@@ -272,9 +396,11 @@ onMounted(async () => {
 
   // 不传 directory 参数以加载所有会话
   await loadSessions()
-  await loadFiles('.')
-  await loadProjects()
-  if (appMode.value === 'agent') {
+  if (!isBrowserExtension.value) {
+    await loadFiles('.')
+    await loadProjects()
+  }
+  if (!isBrowserExtension.value && appMode.value === 'agent') {
     await loadGlobalRecentSessions().catch((error) => {
       console.error('Failed to load global recent sessions:', error)
     })
@@ -285,7 +411,15 @@ onMounted(async () => {
   await loadProviders()
   await loadConfig()
 
-  if (sessions.value.length > 0) {
+  const requestedSessionId = initialSessionIdFromUrl()
+
+  if (isBrowserExtension.value) {
+    window.addEventListener('message', handleExtensionParentMessage)
+    await refreshExtensionPageContext()
+    createSession('.')
+  } else if (requestedSessionId && await selectSessionById(requestedSessionId)) {
+    window.history.replaceState({}, '', window.location.pathname)
+  } else if (sessions.value.length > 0) {
     await selectSession(sessions.value[0])
   } else {
     // 进入草稿模式，不实际创建会话
@@ -293,13 +427,18 @@ onMounted(async () => {
   }
 
   // 加载待处理的问题和权限请求
-  await loadPendingRequests()
+  if (!isBrowserExtension.value || currentSession.value) {
+    await loadPendingRequests()
+  }
 
-  // Cmd+K / Ctrl+K shortcut for search
-  document.addEventListener('keydown', handleGlobalKeydown)
+  if (!isBrowserExtension.value) {
+    // Cmd+K / Ctrl+K shortcut for search
+    document.addEventListener('keydown', handleGlobalKeydown)
+  }
 })
 
 onUnmounted(() => {
+  window.removeEventListener('message', handleExtensionParentMessage)
   unsubscribe()
   if (globalEventSource) {
     globalEventSource.close()
@@ -395,6 +534,7 @@ function handleNewSession() {
   showProjectsPage.value = false
   showMetricsPage.value = false
   showAutomationsPage.value = false
+  void refreshExtensionPageContext()
   createSession(currentDirectory.value || '.')
 }
 
@@ -642,7 +782,128 @@ function handlePromptSelect(prompt: string) {
 </script>
 
 <template>
-  <div class="app-layout">
+  <div v-if="isBrowserExtension" class="extension-app-layout">
+    <header class="extension-chat-header">
+      <div class="extension-header-main">
+        <div class="extension-title-row">
+          <span class="extension-title">Browser chat</span>
+          <span class="extension-badge">Extension</span>
+        </div>
+        <div class="extension-page-context" :title="extensionPageDetail">
+          <Globe2 :size="14" />
+          <span>{{ extensionPageLabel }}</span>
+        </div>
+      </div>
+      <div class="extension-header-actions">
+        <button class="extension-icon-btn" type="button" title="Refresh page context" @click="refreshExtensionPageContext">
+          <RefreshCw :size="16" />
+        </button>
+        <button class="extension-icon-btn" type="button" title="设置" @click="openSettings">
+          <Settings :size="16" />
+        </button>
+        <button class="extension-action-btn" type="button" @click="handleNewSession">
+          <Plus :size="16" />
+          <span>New</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="extension-chat-body" :class="{ 'empty-layout': isEmptyState }">
+      <div v-if="extensionConnectionIssue" class="extension-connection-banner">
+        <div>
+          <strong>{{ extensionConnectionText }}</strong>
+          <span>{{ extensionRelayStatus.origin || 'http://127.0.0.1:4096' }}</span>
+        </div>
+        <button type="button" @click="openSettings">设置连接</button>
+      </div>
+
+      <ChatPanel
+        :messages="messages"
+        :isLoading="isLoading"
+        :isStreaming="isStreaming"
+        :pendingQuestions="pendingQuestions"
+        :pendingPermissions="pendingPermissions"
+        :sessionError="sessionError"
+        :currentDirectory="currentDirectory"
+        :canChangeDirectory="false"
+        mode="chat"
+        @question-answered="(id, answers) => answerQuestion(id, answers)"
+        @question-rejected="rejectQuestion"
+        @permission-responded="respondPermission"
+        @clear-error="clearSessionError"
+        @open-settings="openSettings"
+        @delete-part="handleDeletePart"
+        @update-part="handleUpdatePart"
+        @change-directory="changeDirectory"
+      />
+      <InputBox
+        :disabled="isLoading"
+        :isStreaming="isStreaming"
+        :centered="messages.length === 0"
+        :ensureSession="ensureCurrentSessionId"
+        :providers="providers"
+        :currentProvider="currentProvider"
+        :currentModel="currentModel"
+        mode="chat"
+        :messages="messages"
+        @send="handleSend"
+        @abort="abortCurrentSession"
+        @select-model="handleSelectModel"
+        @open-mcp="handleOpenMcp"
+        @toggle-mcp-panel="toggleMcpPanel"
+        @open-skills="handleOpenSkills"
+        @compress-session="handleSummarize"
+        @toggle-todo="toggleTodoList"
+        @toggle-plan="togglePlanPanel"
+      />
+
+      <div v-if="showPlanPanel" class="panel-overlay" @click.self="showPlanPanel = false">
+        <div class="plan-panel-container">
+          <PlanPanel :messages="messages" @close="showPlanPanel = false" />
+        </div>
+      </div>
+
+      <div v-if="showTodoList" class="panel-overlay" @click.self="showTodoList = false">
+        <div class="todo-panel-container">
+          <TodoList :items="todoItems" :isLoading="isLoading" @close="showTodoList = false" @refresh="loadTodoItems" />
+        </div>
+      </div>
+
+      <div v-if="showMcpPanel" class="panel-overlay" @click.self="showMcpPanel = false">
+        <div class="mcp-panel-container">
+          <McpProjectPanel :currentDirectory="currentDirectory" @close="showMcpPanel = false" />
+        </div>
+      </div>
+
+      <aside v-if="extensionTerminals.length > 0" class="extension-terminal-notice">
+        <Terminal :size="16" />
+        <div>
+          <strong>终端已在主界面打开</strong>
+          <span>侧边栏内不展示 PTY 终端，点击继续到完整对话。</span>
+        </div>
+        <button type="button" @click="openCurrentExtensionSessionInMainWeb">继续</button>
+      </aside>
+    </main>
+
+    <BrowserExtensionSettingsPanel v-if="showSettings" @close="closeSettings" />
+
+    <div class="notifications-container" v-if="sessionNotifications.length > 0">
+      <div
+        v-for="notification in sessionNotifications"
+        :key="notification.id"
+        class="notification-toast"
+        :class="notification.type"
+      >
+        <div class="notification-content">
+          <span class="notification-title">{{ notification.sessionTitle }}</span>
+          <span class="notification-message">{{ notification.message }}</span>
+        </div>
+        <button class="notification-close" @click="dismissNotification(notification.id)">×</button>
+      </div>
+    </div>
+  </div>
+
+  <div v-else class="app-layout">
     <!-- Sidebar -->
     <Sidebar
       :collapsed="sidebarCollapsed"
@@ -906,6 +1167,230 @@ function handlePromptSelect(prompt: string) {
 
 <style scoped>
 /* Layout uses global styles from style.css */
+
+.extension-app-layout {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg-primary);
+}
+
+.extension-chat-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  min-height: 58px;
+  padding: 10px 12px;
+  border-bottom: 0.5px solid var(--border-default);
+  background: var(--bg-elevated);
+}
+
+.extension-header-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.extension-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.extension-title {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.extension-badge {
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.extension-page-context {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
+.extension-page-context span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.extension-header-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.extension-icon-btn,
+.extension-action-btn {
+  border: none;
+  border-radius: var(--radius-md);
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.extension-icon-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.extension-icon-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.extension-action-btn {
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.extension-action-btn:hover {
+  background: var(--accent-hover);
+}
+
+.extension-chat-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 12px 12px;
+}
+
+.extension-connection-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 0.5px solid rgba(180, 35, 24, 0.22);
+  border-radius: var(--radius-md);
+  background: rgba(180, 35, 24, 0.06);
+  color: var(--text-primary);
+}
+
+.extension-connection-banner div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.extension-connection-banner strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.extension-connection-banner span {
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.extension-connection-banner button,
+.extension-terminal-notice button {
+  flex-shrink: 0;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 0 10px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.extension-terminal-notice {
+  position: absolute;
+  right: 12px;
+  bottom: 86px;
+  z-index: 80;
+  width: min(330px, calc(100% - 24px));
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 0.5px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
+}
+
+.extension-terminal-notice > svg {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.extension-terminal-notice div {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.extension-terminal-notice strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.extension-terminal-notice span {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.extension-chat-body :deep(.chat-messages) {
+  flex: 1;
+}
+
+.extension-chat-body :deep(.chat-empty) {
+  padding-top: 32px;
+}
+
+.extension-chat-body :deep(.input-container) {
+  padding-bottom: 0;
+}
 
 .panel-overlay {
   position: absolute;

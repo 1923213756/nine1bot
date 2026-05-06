@@ -111,6 +111,10 @@ describe('loadConfig browser migration guards', () => {
       cdpPort: 9222,
       autoLaunch: true,
       headless: false,
+      sidepanel: {
+        mcpServers: [],
+        skills: [],
+      },
     })
   })
 

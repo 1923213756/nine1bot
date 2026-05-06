@@ -9,6 +9,11 @@ import { mapValues } from "remeda"
 import { errors } from "../error"
 import { Log } from "../../util/log"
 import { lazy } from "../../util/lazy"
+import {
+  BrowserExtensionConfigPatch,
+  patchBrowserExtensionConfig,
+  readBrowserExtensionConfig,
+} from "../nine1bot-browser-extension-config"
 
 const log = Log.create({ service: "server" })
 
@@ -212,6 +217,27 @@ export const ConfigRoutes = lazy(() =>
         return c.json({ error: e.message }, 500)
       }
     })
+    .get("/nine1bot/browser-extension", async (c) => {
+      try {
+        return c.json(await readBrowserExtensionConfig())
+      } catch (e: any) {
+        return c.json({ error: e.message }, 500)
+      }
+    })
+    .patch(
+      "/nine1bot/browser-extension",
+      validator("json", BrowserExtensionConfigPatch),
+      async (c) => {
+        try {
+          const config = await patchBrowserExtensionConfig(c.req.valid("json"))
+          Config.refresh()
+          Provider.refresh()
+          return c.json(config)
+        } catch (e: any) {
+          return c.json({ error: e.message }, e.message === "No config path" ? 404 : 500)
+        }
+      },
+    )
     .get("/nine1bot/custom-providers", async (c) => {
       const configPath = process.env.NINE1BOT_CONFIG_PATH || ""
       if (!configPath) {

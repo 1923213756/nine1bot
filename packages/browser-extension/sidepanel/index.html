@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,109 +8,492 @@
       :root {
         color-scheme: light;
         font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background: #f4f7fb;
-        color: #122033;
+        background: #f7f7f5;
+        color: #1f2328;
+      }
+
+      * {
+        box-sizing: border-box;
       }
 
       body {
         margin: 0;
         min-height: 100vh;
-        display: flex;
-        flex-direction: column;
-        background:
-          radial-gradient(circle at top right, rgba(79, 124, 255, 0.14), transparent 32%),
-          linear-gradient(180deg, #f8fbff 0%, #eef4fb 100%);
+        background: #f7f7f5;
       }
 
-      header {
+      button,
+      input,
+      textarea {
+        font: inherit;
+      }
+
+      button {
+        border: 0;
+        cursor: pointer;
+      }
+
+      button:disabled,
+      input:disabled,
+      textarea:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      #app-frame {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        border: 0;
+        background: #ffffff;
+      }
+
+      .fallback-app {
+        width: 100vw;
+        height: 100vh;
         display: flex;
-        justify-content: space-between;
+        flex-direction: column;
+        overflow: hidden;
+        background: #f7f7f5;
+      }
+
+      .fallback-header {
+        flex: 0 0 auto;
+        display: flex;
         align-items: center;
+        justify-content: space-between;
         gap: 12px;
-        padding: 12px 14px;
-        border-bottom: 1px solid rgba(18, 32, 51, 0.08);
-        background: rgba(255, 255, 255, 0.84);
-        backdrop-filter: blur(8px);
+        min-height: 58px;
+        padding: 10px 12px;
+        border-bottom: 1px solid rgba(31, 35, 40, 0.1);
+        background: #f7f7f5;
+      }
+
+      .header-main {
+        min-width: 0;
+      }
+
+      .title-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
       }
 
       .title {
         font-size: 14px;
-        font-weight: 700;
+        font-weight: 650;
+      }
+
+      .badge {
+        padding: 1px 6px;
+        border-radius: 999px;
+        background: #e9ece7;
+        color: #586069;
+        font-size: 10px;
+        line-height: 16px;
       }
 
       #status {
+        margin-top: 2px;
+        color: #6b7280;
         font-size: 12px;
-        color: #6c7a90;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       #status.connected {
         color: #14774b;
       }
 
-      button {
-        border: 0;
-        border-radius: 999px;
-        padding: 8px 12px;
-        background: #1f5eff;
-        color: white;
-        cursor: pointer;
-        font-size: 12px;
+      #status.error {
+        color: #b42318;
       }
 
-      main {
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .icon-button,
+      .primary-button,
+      .secondary-button {
+        height: 32px;
+        border-radius: 8px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .icon-button {
+        min-width: 32px;
+        padding: 0 10px;
+        background: transparent;
+        color: #4b5563;
+      }
+
+      .icon-button:hover {
+        background: #ececea;
+        color: #111827;
+      }
+
+      .primary-button {
+        padding: 0 12px;
+        background: #1f5eff;
+        color: #ffffff;
+      }
+
+      .secondary-button {
+        padding: 0 12px;
+        background: #ececea;
+        color: #374151;
+      }
+
+      .fallback-body {
         position: relative;
         flex: 1;
         min-height: 0;
+        display: flex;
+        flex-direction: column;
+        padding: 18px 12px 12px;
       }
 
-      #app-frame {
-        border: 0;
-        width: 100%;
-        height: 100%;
-        min-height: calc(100vh - 62px);
-        background: white;
+      .disconnected-card {
+        margin: auto;
+        width: min(420px, 100%);
+        padding: 18px;
+        border: 1px solid rgba(31, 35, 40, 0.1);
+        border-radius: 10px;
+        background: #ffffff;
+        box-shadow: 0 10px 30px rgba(31, 35, 40, 0.06);
       }
 
-      #fallback {
+      .disconnected-card h1 {
+        margin: 0 0 8px;
+        font-size: 18px;
+        line-height: 1.3;
+      }
+
+      .disconnected-card p {
+        margin: 0;
+        color: #6b7280;
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .fake-input {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 56px;
+        margin-top: 14px;
+        padding: 10px 12px;
+        border: 1px solid rgba(31, 35, 40, 0.1);
+        border-radius: 12px;
+        background: #ffffff;
+        color: #9ca3af;
+        font-size: 13px;
+      }
+
+      .settings-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 20;
         display: none;
-        box-sizing: border-box;
-        margin: 16px;
-        padding: 16px;
-        border-radius: 16px;
-        background: rgba(255, 255, 255, 0.95);
-        border: 1px solid rgba(18, 32, 51, 0.08);
+        align-items: center;
+        justify-content: center;
+        padding: 18px;
+        background: rgba(0, 0, 0, 0.46);
       }
 
-      #fallback.visible {
+      .settings-overlay.visible {
+        display: flex;
+      }
+
+      .settings-modal {
+        width: min(760px, 100%);
+        max-height: min(82vh, 760px);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        border-radius: 12px;
+        background: #ffffff;
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.24);
+      }
+
+      .modal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 18px 22px 14px;
+        border-bottom: 1px solid rgba(31, 35, 40, 0.08);
+      }
+
+      .modal-title {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 650;
+      }
+
+      .close-button {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        background: transparent;
+        color: #4b5563;
+        font-size: 20px;
+        line-height: 1;
+      }
+
+      .close-button:hover {
+        background: #f0f0ee;
+      }
+
+      .settings-tabs {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 4px;
+        margin: 0 22px;
+        padding: 4px;
+        border-radius: 8px;
+        background: #e8e5df;
+      }
+
+      .tab {
+        min-width: 0;
+        height: 28px;
+        border-radius: 6px;
+        background: transparent;
+        color: #57534e;
+        font-size: 12px;
+      }
+
+      .tab.active {
+        background: #ffffff;
+        color: #1f2328;
+        box-shadow: 0 1px 2px rgba(31, 35, 40, 0.08);
+      }
+
+      .modal-body {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        padding: 24px 22px;
+      }
+
+      .settings-section {
+        display: none;
+      }
+
+      .settings-section.active {
         display: block;
+      }
+
+      .section-title {
+        margin: 0 0 4px;
+        font-size: 15px;
+        font-weight: 650;
+      }
+
+      .section-desc {
+        margin: 0 0 18px;
+        color: #8a8f98;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .field + .field {
+        margin-top: 14px;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 6px;
+        color: #374151;
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      input,
+      textarea {
+        width: 100%;
+        border: 1px solid rgba(31, 35, 40, 0.15);
+        border-radius: 8px;
+        padding: 10px 11px;
+        background: #ffffff;
+        color: #1f2328;
+        font-size: 13px;
+        outline: none;
+      }
+
+      input:focus,
+      textarea:focus {
+        border-color: #1f5eff;
+        box-shadow: 0 0 0 3px rgba(31, 94, 255, 0.1);
+      }
+
+      textarea {
+        min-height: 120px;
+        resize: vertical;
+        line-height: 1.5;
+      }
+
+      .actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 14px;
+      }
+
+      .message {
+        min-height: 18px;
+        margin-top: 12px;
+        color: #6b7280;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .message.success {
+        color: #14774b;
+      }
+
+      .message.error {
+        color: #b42318;
+      }
+
+      .endpoint-list {
+        margin-top: 18px;
+        padding-top: 14px;
+        border-top: 1px solid rgba(31, 35, 40, 0.08);
+        color: #6b7280;
+        font-size: 12px;
+      }
+
+      .endpoint-row {
+        display: grid;
+        grid-template-columns: 82px 1fr;
+        gap: 8px;
+        align-items: start;
+        margin-top: 8px;
       }
 
       code {
         display: inline-block;
-        margin-top: 8px;
         padding: 4px 6px;
-        border-radius: 8px;
-        background: #eef3ff;
+        border-radius: 6px;
+        background: #f0f0ee;
+        color: #374151;
         word-break: break-all;
+      }
+
+      .disabled-note {
+        padding: 14px;
+        border-radius: 8px;
+        background: #f7f7f5;
+        color: #6b7280;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .hidden {
+        display: none !important;
       }
     </style>
   </head>
   <body>
-    <header>
-      <div>
-        <div class="title">Nine1Bot Side Panel</div>
-        <div id="status">checking relay...</div>
-      </div>
-      <button id="reload" type="button">Reload</button>
-    </header>
-    <main>
-      <section id="fallback" aria-live="polite">
-        <strong>Unable to load the embedded UI.</strong>
-        <div id="fallback-copy">The side panel will retry the configured server URL below.</div>
-        <code id="target-url"></code>
+    <iframe id="app-frame" title="Nine1Bot browser-extension chat"></iframe>
+
+    <section id="fallback-app" class="fallback-app hidden" aria-live="polite">
+      <header class="fallback-header">
+        <div class="header-main">
+          <div class="title-row">
+            <span class="title">Browser chat</span>
+            <span class="badge">Extension</span>
+          </div>
+          <div id="status">正在检查 Nine1Bot 连接...</div>
+        </div>
+        <div class="header-actions">
+          <button id="reload" class="icon-button" type="button" title="重新连接">重试</button>
+          <button id="settings-toggle" class="icon-button" type="button" title="设置">设置</button>
+        </div>
+      </header>
+
+      <main class="fallback-body">
+        <div class="disconnected-card">
+          <h1>未连接到 Nine1Bot 主进程</h1>
+          <p>插件侧边栏已经启动。你可以在设置里修改 Browser relay origin，保存后会自动重连。</p>
+        </div>
+        <div class="fake-input">连接 Nine1Bot 后即可发送浏览器对话...</div>
+      </main>
+
+      <section id="settings-panel" class="settings-overlay" aria-modal="true" role="dialog">
+        <div class="settings-modal">
+          <div class="modal-header">
+            <h2 class="modal-title">浏览器插件设置</h2>
+            <button id="settings-close" class="close-button" type="button" title="关闭">×</button>
+          </div>
+          <div class="settings-tabs">
+            <button class="tab active" data-tab="relay" type="button">连接</button>
+            <button class="tab" data-tab="model" type="button">模型</button>
+            <button class="tab" data-tab="prompt" type="button">提示词</button>
+            <button class="tab" data-tab="mcp" type="button">MCP</button>
+            <button class="tab" data-tab="skills" type="button">技能</button>
+          </div>
+          <div class="modal-body">
+            <section id="section-relay" class="settings-section active">
+              <h3 class="section-title">Browser relay</h3>
+              <p class="section-desc">填写插件要连接的 Nine1Bot Origin，插件会自动派生浏览器控制端点。</p>
+              <div class="field">
+                <label for="server-origin">Browser relay origin</label>
+                <input id="server-origin" type="url" spellcheck="false" placeholder="http://127.0.0.1:4096" />
+              </div>
+              <div class="actions">
+                <button id="save-settings" class="primary-button" type="button">保存并重连</button>
+                <button id="test-settings" class="secondary-button" type="button">测试连接</button>
+              </div>
+              <div id="settings-message" class="message"></div>
+              <div class="endpoint-list">
+                <div><strong>派生端点</strong></div>
+                <div class="endpoint-row">
+                  <span>Bootstrap</span>
+                  <code id="bootstrap-url"></code>
+                </div>
+                <div class="endpoint-row">
+                  <span>Extension</span>
+                  <code id="extension-url"></code>
+                </div>
+              </div>
+            </section>
+
+            <section id="section-model" class="settings-section">
+              <h3 class="section-title">默认模型</h3>
+              <p class="section-desc">连接后可在这里配置浏览器插件会话专属默认模型。</p>
+              <div class="disabled-note">当前未连接到 Nine1Bot 主进程。请先在“连接”中修正端口并重试。</div>
+            </section>
+
+            <section id="section-prompt" class="settings-section">
+              <h3 class="section-title">插件提示词</h3>
+              <p class="section-desc">连接后可设置只作用于浏览器插件会话的提示词。</p>
+              <textarea disabled placeholder="连接后可编辑插件提示词"></textarea>
+            </section>
+
+            <section id="section-mcp" class="settings-section">
+              <h3 class="section-title">MCP</h3>
+              <p class="section-desc">连接后可选择浏览器插件会话默认追加的 MCP 服务器。</p>
+              <div class="disabled-note">MCP 配置保存在 Nine1Bot 主进程内，当前断连时不可编辑。</div>
+            </section>
+
+            <section id="section-skills" class="settings-section">
+              <h3 class="section-title">技能</h3>
+              <p class="section-desc">连接后可选择浏览器插件会话默认追加的技能。</p>
+              <div class="disabled-note">技能列表由 Nine1Bot 主进程提供，当前断连时不可编辑。</div>
+            </section>
+          </div>
+        </div>
       </section>
-      <iframe id="app-frame" title="Nine1Bot UI"></iframe>
-    </main>
+    </section>
+
     <script type="module" src="/src/sidepanel/index.ts"></script>
   </body>
 </html>

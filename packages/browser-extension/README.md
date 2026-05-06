@@ -24,11 +24,7 @@ bun run build
 }
 ```
 
-扩展默认连接 `http://127.0.0.1:4096/browser/extension`。如果 Nine1Bot 运行在其他端口，可在扩展 service worker 控制台执行：
-
-```js
-chrome.storage.sync.set({ serverOrigin: "http://127.0.0.1:4100" })
-```
+扩展默认连接 `http://127.0.0.1:4096/browser/extension`。如果浏览器 relay 在其他本地端口，打开扩展侧边栏的 Settings，修改 Browser relay origin，例如 `http://127.0.0.1:4100`，保存后扩展会自动重连并重新加载聊天界面。这只是扩展连接目标，不会修改 Nine1Bot 服务本身的端口配置。
 
 不要再配置 `mcp.browser` 或 `mcp.browser-control`；Nine1Bot 会对这些旧配置给出明确迁移报错。
 

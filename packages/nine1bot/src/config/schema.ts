@@ -52,6 +52,17 @@ export const SkillsConfigSchema = z.object({
 
 // 浏览器控制配置
 // 浏览器控制已内置到主服务的 /browser/ 路径下，不再需要独立端口
+export const BrowserSidepanelConfigSchema = z.object({
+  // 浏览器插件侧边栏专属默认模型，格式 provider/model
+  model: z.string().optional(),
+  // 浏览器插件侧边栏专属提示词
+  prompt: z.string().optional(),
+  // 浏览器插件侧边栏默认追加的 MCP 服务器
+  mcpServers: z.array(z.string()).default([]),
+  // 浏览器插件侧边栏默认追加的技能
+  skills: z.array(z.string()).default([]),
+})
+
 export const BrowserConfigSchema = z.object({
   // 是否启用浏览器控制
   enabled: z.boolean().default(false),
@@ -61,6 +72,8 @@ export const BrowserConfigSchema = z.object({
   autoLaunch: z.boolean().default(true),
   // 是否使用无头模式
   headless: z.boolean().default(false),
+  // 浏览器插件侧边栏配置
+  sidepanel: BrowserSidepanelConfigSchema.default({ mcpServers: [], skills: [] }),
 })
 
 export const RuntimeFeatureFlagSchema = z.object({

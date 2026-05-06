@@ -1,5 +1,5 @@
 import type { ToolDefinition, ToolResult } from './index'
-import { addTabToNine1Group } from '../background/tab-group-manager'
+import { addTabToNine1Group, getDefaultNine1Tab, getTabsInActiveNine1Group } from '../background/tab-group-manager'
 
 interface TabsContextArgs {
   createIfEmpty?: boolean
@@ -27,20 +27,31 @@ function isAutomatableTabUrl(url?: string): boolean {
   }
 }
 
-// Track tabs created by this extension (MCP tab group)
-const mcpTabIds = new Set<number>()
+function serializeTab(tab: chrome.tabs.Tab) {
+  return {
+    id: tab.id,
+    url: tab.url,
+    title: tab.title,
+    active: tab.active,
+    windowId: tab.windowId,
+  }
+}
+
+async function listManagedTabs() {
+  return (await getTabsInActiveNine1Group()).filter((tab) => typeof tab.id === 'number')
+}
 
 export const tabsContextTool = {
   definition: {
     name: 'tabs_context_mcp',
     description:
-      'Get context information about the current MCP tab group. Returns all tab IDs managed by the extension. Use this to know what tabs exist before using other browser automation tools.',
+      'Get context information about the active Nine1Bot tab group. Returns only tab IDs managed by the current extension side-panel session.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         createIfEmpty: {
           type: 'boolean',
-          description: 'If true and no tabs exist in the group, create a new tab.',
+          description: 'If true and no tabs exist in the active Nine1Bot group, create a new tab.',
         },
         url: {
           type: 'string',
@@ -48,7 +59,7 @@ export const tabsContextTool = {
         },
         includeAll: {
           type: 'boolean',
-          description: 'If true, include all automatable http/https/file tabs visible to the extension.',
+          description: 'If true, include automatable tabs from the active Nine1Bot group. It never includes tabs outside the group.',
         },
       },
       required: [],
@@ -59,68 +70,18 @@ export const tabsContextTool = {
     const { createIfEmpty = false, url, includeAll = false } = (args as TabsContextArgs) || {}
 
     try {
-      // Clean up closed tabs from our tracking
-      const allTabs = await chrome.tabs.query({})
-      const allTabIds = new Set(allTabs.map((t) => t.id).filter((id): id is number => id !== undefined))
+      let managedTabs = await listManagedTabs()
 
-      for (const tabId of mcpTabIds) {
-        if (!allTabIds.has(tabId)) {
-          mcpTabIds.delete(tabId)
-        }
-      }
-
-      // Get info about managed tabs
-      const managedTabs: Array<{
-        id: number
-        url?: string
-        title?: string
-        active: boolean
-        windowId: number
-      }> = []
-
-      for (const tabId of mcpTabIds) {
-        try {
-          const tab = await chrome.tabs.get(tabId)
-          managedTabs.push({
-            id: tab.id!,
-            url: tab.url,
-            title: tab.title,
-            active: tab.active,
-            windowId: tab.windowId,
-          })
-        } catch {
-          // Tab no longer exists
-          mcpTabIds.delete(tabId)
-        }
-      }
-
-      // Create a new tab if requested and none exist
       if (createIfEmpty && managedTabs.length === 0) {
         const newTab = await chrome.tabs.create({ url: normalizeNewTabUrl(url) })
         if (newTab.id) {
-          mcpTabIds.add(newTab.id)
           await addTabToNine1Group(newTab.id)
-          managedTabs.push({
-            id: newTab.id,
-            url: newTab.url,
-            title: newTab.title,
-            active: newTab.active,
-            windowId: newTab.windowId,
-          })
+          managedTabs = await listManagedTabs()
         }
       }
 
-      // Also include the currently active tab if not already tracked
-      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
-      let activeTabInfo = null
-      if (activeTab?.id) {
-        activeTabInfo = {
-          id: activeTab.id,
-          url: activeTab.url,
-          title: activeTab.title,
-          windowId: activeTab.windowId,
-        }
-      }
+      const activeTab = await getDefaultNine1Tab()
+      const automatableTabs = managedTabs.filter((tab) => isAutomatableTabUrl(tab.url))
 
       return {
         content: [
@@ -128,19 +89,9 @@ export const tabsContextTool = {
             type: 'text',
             text: JSON.stringify(
               {
-                mcpTabs: managedTabs,
-                activeTab: activeTabInfo,
-                allTabs: includeAll
-                  ? allTabs
-                    .filter((tab) => tab.id && isAutomatableTabUrl(tab.url))
-                    .map((tab) => ({
-                      id: tab.id,
-                      url: tab.url,
-                      title: tab.title,
-                      active: tab.active,
-                      windowId: tab.windowId,
-                    }))
-                  : undefined,
+                mcpTabs: managedTabs.map(serializeTab),
+                activeTab: activeTab ? serializeTab(activeTab) : null,
+                allTabs: includeAll ? automatableTabs.map(serializeTab) : undefined,
                 totalMcpTabs: managedTabs.length,
               },
               null,
@@ -162,7 +113,7 @@ export const tabsContextTool = {
 export const tabsCreateTool = {
   definition: {
     name: 'tabs_create_mcp',
-    description: 'Creates a new empty tab in the MCP tab group. Use tabs_context_mcp first to see existing tabs.',
+    description: 'Creates a new empty tab in the active Nine1Bot tab group. Use tabs_context_mcp first to see existing tabs.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -188,7 +139,6 @@ export const tabsCreateTool = {
         }
       }
 
-      mcpTabIds.add(newTab.id)
       await addTabToNine1Group(newTab.id)
 
       return {
@@ -202,7 +152,7 @@ export const tabsCreateTool = {
                 title: newTab.title,
                 windowId: newTab.windowId,
                 requestedUrl: initialUrl,
-                message: 'New tab created and added to MCP tab group',
+                message: 'New tab created and added to active Nine1Bot tab group',
               },
               null,
               2
@@ -220,17 +170,10 @@ export const tabsCreateTool = {
   },
 }
 
-// Helper to add existing tab to MCP group
 export function addTabToMcpGroup(tabId: number): void {
-  mcpTabIds.add(tabId)
+  addTabToNine1Group(tabId).catch(() => {})
 }
 
-// Helper to remove tab from MCP group
-export function removeTabFromMcpGroup(tabId: number): void {
-  mcpTabIds.delete(tabId)
+export function removeTabFromMcpGroup(_tabId: number): void {
+  // Tabs outside the active Chrome tab group are no longer tracked by an in-memory set.
 }
-
-// Listen for tab close events to clean up
-chrome.tabs.onRemoved.addListener((tabId) => {
-  mcpTabIds.delete(tabId)
-})

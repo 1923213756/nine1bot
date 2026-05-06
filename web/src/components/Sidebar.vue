@@ -137,6 +137,10 @@ function getSessionProjectTitle(session: SidebarSession): string {
   return session.projectDisplayPath || session.directory || ''
 }
 
+function isBrowserExtensionSession(session: SidebarSession): boolean {
+  return session.client?.source === 'browser-extension'
+}
+
 // Context menu handlers
 function openContextMenu(event: MouseEvent, session: SidebarSession) {
   event.preventDefault()
@@ -258,6 +262,7 @@ function contextMenuDelete() {
           <Loader2 v-if="isSessionRunning(session.id)" :size="14" class="session-icon spin" />
           <MessageSquare v-else :size="14" class="session-icon" />
           <span class="session-title">{{ getSessionTitle(session) }}</span>
+          <span v-if="isBrowserExtensionSession(session)" class="session-source-badge">Browser</span>
           <span v-if="mode === 'agent'" class="session-project-label" :title="getSessionProjectTitle(session)">
             {{ getSessionProjectLabel(session) }}
           </span>
@@ -650,6 +655,21 @@ function contextMenuDelete() {
   margin-left: 6px;
   filter: saturate(80%);
   pointer-events: none;
+}
+
+.session-source-badge {
+  flex-shrink: 0;
+  max-width: 70px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: #175cd3;
+  background: #e8f0ff;
+  border: 0.5px solid rgba(23, 92, 211, 0.18);
+  border-radius: var(--radius-full);
+  padding: 0 7px;
+  line-height: 17px;
 }
 
 .session-item:hover .session-project-label {

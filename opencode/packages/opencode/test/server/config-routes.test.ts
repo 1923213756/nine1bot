@@ -68,6 +68,63 @@ describe("config routes reload behavior", () => {
     }
   })
 
+  test("browser extension config route reads and writes sidepanel defaults", async () => {
+    const setup = await setupProject()
+    const disposed = collectInstanceDisposedEvents()
+
+    try {
+      const empty = await request(setup.projectDir, "/config/nine1bot/browser-extension", {
+        method: "GET",
+        headers: jsonHeaders,
+      })
+      expect(empty.status).toBe(200)
+      expect(await empty.json()).toEqual({})
+
+      const update = await request(setup.projectDir, "/config/nine1bot/browser-extension", {
+        method: "PATCH",
+        headers: jsonHeaders,
+        body: JSON.stringify({
+          model: { providerID: "openai", modelID: "gpt-5" },
+          prompt: "Use concise browser context.",
+          mcpServers: ["filesystem", "gitlab", "filesystem"],
+          skills: ["browser-review", "browser-review"],
+        }),
+      })
+      expect(update.status).toBe(200)
+      expect(await update.json()).toEqual({
+        model: { providerID: "openai", modelID: "gpt-5" },
+        prompt: "Use concise browser context.",
+        mcpServers: ["filesystem", "gitlab"],
+        skills: ["browser-review"],
+      })
+      expect(disposed.events).toEqual([])
+
+      const file = JSON.parse(await readFile(setup.nine1botConfigPath, "utf-8"))
+      expect(file.browser.sidepanel).toEqual({
+        model: "openai/gpt-5",
+        prompt: "Use concise browser context.",
+        mcpServers: ["filesystem", "gitlab"],
+        skills: ["browser-review"],
+      })
+
+      const clearPrompt = await request(setup.projectDir, "/config/nine1bot/browser-extension", {
+        method: "PATCH",
+        headers: jsonHeaders,
+        body: JSON.stringify({
+          prompt: null,
+          mcpServers: null,
+          skills: [],
+        }),
+      })
+      expect(clearPrompt.status).toBe(200)
+      expect(await clearPrompt.json()).toEqual({
+        model: { providerID: "openai", modelID: "gpt-5" },
+      })
+    } finally {
+      disposed.stop()
+    }
+  })
+
   test("custom provider upsert and delete refresh providers without disposing the current instance", async () => {
     const setup = await setupProject()
     const disposed = collectInstanceDisposedEvents()
