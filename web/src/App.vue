@@ -28,6 +28,7 @@ import RightPanel from './components/RightPanel.vue'
 import { useAgentTerminal } from './composables/useAgentTerminal'
 import { useFilePreview } from './composables/useFilePreview'
 import { Globe2, Plus, RefreshCw, Settings, Terminal } from 'lucide-vue-next'
+import { getTrustedExtensionParentContext, isTrustedExtensionParentEvent } from './utils/extension-parent'
 
 import { MAX_PARALLEL_AGENTS } from './composables/useParallelSessions'
 
@@ -325,7 +326,7 @@ async function refreshExtensionPageContext() {
 }
 
 function handleExtensionParentMessage(event: MessageEvent) {
-  if (!isBrowserExtension.value || event.source !== window.parent) return
+  if (!isBrowserExtension.value || !isTrustedExtensionParentEvent(event)) return
   const message = event.data as {
     type?: unknown
     settings?: {
@@ -384,10 +385,12 @@ async function selectSessionById(sessionId: string): Promise<boolean> {
 function openCurrentExtensionSessionInMainWeb() {
   const sessionId = currentSession.value?.id
   if (!sessionId) return
-  window.parent.postMessage({
+  const parentContext = getTrustedExtensionParentContext()
+  if (!parentContext) return
+  parentContext.parent.postMessage({
     type: 'nine1bot.openMainSession',
     sessionID: sessionId,
-  }, '*')
+  }, parentContext.origin)
 }
 
 onMounted(async () => {

@@ -22,6 +22,23 @@ async function getGroupIdForTab(tabId: number): Promise<number | null> {
   }
 }
 
+async function getTab(tabId: number): Promise<chrome.tabs.Tab | null> {
+  try {
+    return await chrome.tabs.get(tabId)
+  } catch {
+    return null
+  }
+}
+
+async function getGroupWindowId(groupId: number): Promise<number | null> {
+  try {
+    const group = await chrome.tabGroups.get(groupId)
+    return typeof group.windowId === 'number' ? group.windowId : null
+  } catch {
+    return null
+  }
+}
+
 async function groupExists(groupId: number): Promise<boolean> {
   try {
     await chrome.tabGroups.get(groupId)
@@ -88,8 +105,16 @@ export async function createDedicatedNine1Group(tabId: number, taskLabel?: strin
 
 export async function addTabToNine1Group(tabId: number, taskLabel?: string): Promise<number | null> {
   try {
+    const tab = await getTab(tabId)
+    if (!tab) return null
+
     let groupId = await getActiveNine1GroupId()
     if (groupId === null) {
+      return await createDedicatedNine1Group(tabId, taskLabel)
+    }
+
+    const groupWindowId = await getGroupWindowId(groupId)
+    if (groupWindowId !== null && groupWindowId !== tab.windowId) {
       return await createDedicatedNine1Group(tabId, taskLabel)
     }
 

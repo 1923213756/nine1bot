@@ -173,7 +173,3 @@ export const tabsCreateTool = {
 export function addTabToMcpGroup(tabId: number): void {
   addTabToNine1Group(tabId).catch(() => {})
 }
-
-export function removeTabFromMcpGroup(_tabId: number): void {
-  // Tabs outside the active Chrome tab group are no longer tracked by an in-memory set.
-}

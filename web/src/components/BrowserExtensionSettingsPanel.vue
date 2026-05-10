@@ -11,6 +11,7 @@ import {
   type Provider,
   type Skill,
 } from '../api/client'
+import { getTrustedExtensionParentContext, isTrustedExtensionParentEvent } from '../utils/extension-parent'
 
 const emit = defineEmits<{
   close: []
@@ -119,8 +120,9 @@ function toggleSkill(name: string) {
 }
 
 function requestRelay(type: string, payload: Record<string, unknown> = {}) {
-  if (window.parent === window) {
-    return Promise.reject(new Error('当前页面不在浏览器插件侧边栏内。'))
+  const parentContext = getTrustedExtensionParentContext()
+  if (!parentContext) {
+    return Promise.reject(new Error('当前页面不在受信任的浏览器插件侧边栏内。'))
   }
 
   const requestId = `relay-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -130,12 +132,12 @@ function requestRelay(type: string, payload: Record<string, unknown> = {}) {
       reject(new Error('插件连接设置请求超时。'))
     }, 4000)
     pendingRelayRequests.set(requestId, { resolve, reject, timer })
-    window.parent.postMessage({ type, requestId, ...payload }, '*')
+    parentContext.parent.postMessage({ type, requestId, ...payload }, parentContext.origin)
   })
 }
 
 function handleParentMessage(event: MessageEvent) {
-  if (event.source !== window.parent) return
+  if (!isTrustedExtensionParentEvent(event)) return
   const message = event.data as {
     type?: string
     requestId?: string

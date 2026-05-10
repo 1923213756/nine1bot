@@ -45,7 +45,9 @@ async function openSidePanel(windowId: number): Promise<void> {
   await activateDedicatedNine1TabGroup(windowId).catch((error) => {
     console.warn('[Nine1Bot Browser Control] Failed to activate dedicated tab group:', error)
   })
-  await markSidePanelOpened()
+  await markSidePanelOpened().catch((error) => {
+    console.warn('[Nine1Bot Browser Control] Failed to persist side panel open nonce:', error)
+  })
   await chrome.sidePanel.open({ windowId })
 }
 

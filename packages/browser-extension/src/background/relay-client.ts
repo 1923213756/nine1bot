@@ -20,7 +20,6 @@ import { isAbortError } from '../tools/execution-context'
 import { setupDiagnosticsListeners } from './diagnostics-buffer'
 import {
   addTabToNine1Group,
-  createDedicatedNine1Group,
   getDefaultNine1Tab,
   getTabsInActiveNine1Group,
   getTabsInGroupByTab,
@@ -762,7 +761,7 @@ export async function activateDedicatedNine1TabGroup(windowId?: number): Promise
     return { groupId: null }
   }
 
-  const groupId = await createDedicatedNine1Group(activeTab.id)
+  const groupId = await addTabToNine1Group(activeTab.id)
   detachAllActiveSessions()
   await sendInitialTargets()
   return { groupId, tabId: activeTab.id }

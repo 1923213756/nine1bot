@@ -1,3 +1,5 @@
+import { getTrustedExtensionParentContext, isTrustedExtensionParentEvent } from '../utils/extension-parent'
+
 export interface RequestPagePayload {
   platform: string
   url?: string
@@ -16,7 +18,8 @@ type PageContextResponse = {
 }
 
 export async function collectActivePageContext(timeoutMs = 700): Promise<RequestPagePayload | undefined> {
-  if (typeof window === 'undefined' || window.parent === window) return undefined
+  const parentContext = getTrustedExtensionParentContext()
+  if (!parentContext) return undefined
 
   const requestId = createRequestId()
 
@@ -27,7 +30,7 @@ export async function collectActivePageContext(timeoutMs = 700): Promise<Request
     }
 
     const handleMessage = (event: MessageEvent<PageContextResponse>) => {
-      if (event.source !== window.parent) return
+      if (!isTrustedExtensionParentEvent(event)) return
       const message = event.data
       if (message?.type !== 'nine1bot.pageContext' || message.requestId !== requestId) return
       cleanup()
@@ -40,7 +43,7 @@ export async function collectActivePageContext(timeoutMs = 700): Promise<Request
     }, timeoutMs)
 
     window.addEventListener('message', handleMessage)
-    window.parent.postMessage({ type: 'nine1bot.requestPageContext', requestId }, '*')
+    parentContext.parent.postMessage({ type: 'nine1bot.requestPageContext', requestId }, parentContext.origin)
   })
 }
 
