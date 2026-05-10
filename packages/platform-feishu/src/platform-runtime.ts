@@ -10,7 +10,10 @@ import {
   getFeishuCliVersion,
   resolveFeishuCliPath,
 } from './cli'
-import { readFeishuContextEnrichmentSettings } from './enrichment'
+import {
+  FEISHU_DEFAULT_METADATA_TIMEOUT_MS,
+  readFeishuContextEnrichmentSettings,
+} from './enrichment'
 import {
   FEISHU_CURRENT_PAGE_SKILL,
   directoryFromActionInput,
@@ -19,6 +22,19 @@ import {
   inspectSkillDirectory,
   resolveOfficialSkillsDirectory,
 } from './skills'
+import {
+  FEISHU_IM_DEFAULT_BUFFER_MS,
+  FEISHU_IM_DEFAULT_BUSY_TEXT,
+  FEISHU_IM_DEFAULT_MAX_BUFFER_MS,
+  FEISHU_IM_DEFAULT_REPLY_TIMEOUT_MS,
+  FEISHU_IM_DEFAULT_STREAMING_CARD_MAX_CHARS,
+  FEISHU_IM_DEFAULT_STREAMING_CARD_UPDATE_MS,
+  validateFeishuIMConfig,
+} from './im/config'
+import {
+  createFeishuIMBackgroundServices,
+  getFeishuIMRuntimeStatus,
+} from './im/background-runtime'
 import type {
   PlatformActionResult,
   PlatformAdapterContext,
@@ -75,6 +91,7 @@ export const feishuPlatformDescriptor = {
             type: 'string',
             label: 'lark-cli path',
             description: 'Optional explicit path to lark-cli. Leave empty to search PATH.',
+            placeholder: 'Leave empty to search PATH',
           },
           {
             key: 'contextEnrichment',
@@ -82,18 +99,150 @@ export const feishuPlatformDescriptor = {
             label: 'Context enrichment',
             description: 'Controls read-only Feishu metadata enrichment for browser side panel messages.',
             options: ['auto', 'visible-only', 'disabled'],
+            defaultValue: 'auto',
           },
           {
             key: 'metadataTimeoutMs',
             type: 'number',
             label: 'Metadata timeout',
             description: 'Timeout in milliseconds for read-only metadata lookups. Default: 2000.',
+            defaultValue: FEISHU_DEFAULT_METADATA_TIMEOUT_MS,
           },
           {
             key: 'officialSkillsDirectory',
             type: 'string',
             label: 'Official skills directory',
             description: 'External directory containing official lark-* skills. Defaults to ~/.agents/skills. Switching directories takes effect on the next resolve; file changes inside the same directory may take up to 30 seconds to rescan.',
+            placeholder: 'Leave empty to use ~/.agents/skills',
+          },
+        ],
+      },
+      {
+        id: 'im',
+        title: 'IM',
+        description: 'Feishu/Lark IM settings. The new platform-feishu IM layer stays staged until the legacy websocket path is migrated.',
+        fields: [
+          {
+            key: 'imEnabled',
+            type: 'boolean',
+            label: 'Enable IM skeleton',
+            description: 'Stages the new platform-feishu IM layer. It does not open a production websocket in Phase 1.',
+            defaultValue: false,
+          },
+          {
+            key: 'imDefaultAppId',
+            type: 'string',
+            label: 'Default app ID',
+            description: 'Feishu/Lark app_id for the default IM account.',
+            placeholder: 'Fill in after enabling IM',
+          },
+          {
+            key: 'imDefaultAppSecret',
+            type: 'password',
+            label: 'Default app secret',
+            description: 'Stored as a Nine1Bot platform secret reference.',
+            placeholder: 'Fill in after enabling IM',
+            secret: true,
+          },
+          {
+            key: 'imDefaultDirectory',
+            type: 'string',
+            label: 'Default directory',
+            description: 'Fallback workspace directory for new IM conversations.',
+            placeholder: 'Leave empty to use the current project directory',
+          },
+          {
+            key: 'imConnectionMode',
+            type: 'select',
+            label: 'Connection mode',
+            description: 'Only websocket is supported for the first IM implementation.',
+            options: ['websocket'],
+            defaultValue: 'websocket',
+          },
+          {
+            key: 'imDmPolicy',
+            type: 'select',
+            label: 'Private chat policy',
+            options: ['allow', 'deny'],
+            defaultValue: 'allow',
+          },
+          {
+            key: 'imGroupPolicy',
+            type: 'select',
+            label: 'Group chat policy',
+            options: ['mention-only', 'allow', 'deny'],
+            defaultValue: 'mention-only',
+          },
+          {
+            key: 'imAllowFrom',
+            type: 'string-list',
+            label: 'Allow from',
+            description: 'Optional allowlist of chat IDs or sender IDs.',
+            defaultValue: [],
+          },
+          {
+            key: 'imReplyMode',
+            type: 'select',
+            label: 'Reply target',
+            description: 'Where IM replies are posted. Message replies to the incoming message; thread replies in Feishu thread context when available.',
+            options: ['message', 'thread'],
+            defaultValue: 'message',
+          },
+          {
+            key: 'imReplyPresentation',
+            type: 'select',
+            label: 'Reply presentation',
+            description: 'How agent output is rendered in Feishu. Auto uses text for DM and streaming cards for groups or threads.',
+            options: ['auto', 'text', 'card', 'streaming-card'],
+            defaultValue: 'auto',
+          },
+          {
+            key: 'imReplyTimeoutMs',
+            type: 'number',
+            label: 'Reply timeout',
+            description: 'Milliseconds before an active IM reply is marked timed out. Default: 600000.',
+            defaultValue: FEISHU_IM_DEFAULT_REPLY_TIMEOUT_MS,
+          },
+          {
+            key: 'imStreamingCardUpdateMs',
+            type: 'number',
+            label: 'Streaming card update',
+            description: 'Minimum milliseconds between running streaming-card updates. Default: 1000.',
+            defaultValue: FEISHU_IM_DEFAULT_STREAMING_CARD_UPDATE_MS,
+          },
+          {
+            key: 'imStreamingCardMaxChars',
+            type: 'number',
+            label: 'Streaming card max chars',
+            description: 'Maximum characters shown in a streaming card before truncating with a Web continuation hint. Default: 6000.',
+            defaultValue: FEISHU_IM_DEFAULT_STREAMING_CARD_MAX_CHARS,
+          },
+          {
+            key: 'imMessageBufferMs',
+            type: 'number',
+            label: 'Message buffer',
+            description: 'Milliseconds to buffer adjacent IM messages before sending them into a Nine1Bot turn.',
+            defaultValue: FEISHU_IM_DEFAULT_BUFFER_MS,
+          },
+          {
+            key: 'imMaxBufferMs',
+            type: 'number',
+            label: 'Max buffer',
+            description: 'Hard upper bound for IM message buffering.',
+            defaultValue: FEISHU_IM_DEFAULT_MAX_BUFFER_MS,
+          },
+          {
+            key: 'imBusyRejectText',
+            type: 'string',
+            label: 'Busy reject text',
+            defaultValue: FEISHU_IM_DEFAULT_BUSY_TEXT,
+          },
+          {
+            key: 'imAccounts',
+            type: 'json',
+            label: 'Accounts',
+            description: 'Array of account objects. Use appSecretRef; plaintext appSecret is rejected.',
+            defaultValue: [],
           },
         ],
       },
@@ -128,9 +277,16 @@ export const feishuPlatformDescriptor = {
             type: 'string',
             label: 'Official skills directory',
             description: 'Directory containing official lark-* skills. Empty value clears the override. Directory changes apply immediately; same-directory file changes may take up to 30 seconds to rescan.',
+            placeholder: 'Leave empty to clear the override',
           }],
         }],
       },
+    },
+    {
+      id: 'im.inspect',
+      label: 'Inspect IM skeleton',
+      description: 'Shows the normalized Feishu IM skeleton status without opening a websocket.',
+      kind: 'button',
     },
   ],
 } satisfies PlatformDescriptor
@@ -141,7 +297,9 @@ export const feishuPlatformContribution = {
     createAdapter: createFeishuPlatformAdapter,
     sources: feishuRuntimeSources,
   },
+  backgroundServices: createFeishuIMBackgroundServices,
   getStatus: getFeishuStatus,
+  validateConfig: async (settings) => validateFeishuIMConfig(settings),
   handleAction: handleFeishuAction,
 } satisfies PlatformAdapterContribution
 
@@ -179,7 +337,7 @@ async function getFeishuStatus(ctx: PlatformAdapterContext): Promise<PlatformRun
   const checkedAt = new Date().toISOString()
 
   if (!cliPath) {
-    return {
+    return withFeishuIMStatus({
       status: 'missing',
       message: 'lark-cli was not found. Install the official CLI or configure its path.',
       cards: [
@@ -197,7 +355,7 @@ async function getFeishuStatus(ctx: PlatformAdapterContext): Promise<PlatformRun
         stage: 'status',
         message: 'lark-cli was not found',
       }],
-    }
+    }, ctx)
   }
 
   const version = await getFeishuCliVersion({
@@ -221,7 +379,7 @@ async function getFeishuStatus(ctx: PlatformAdapterContext): Promise<PlatformRun
   const skillsReady = skillStatus.companion.skillCount > 0 && skillStatus.official.skillCount > 0
   const finalStatus = status === 'available' && !skillsReady ? 'degraded' : status
 
-  return {
+  return withFeishuIMStatus({
     status: finalStatus,
     message: finalStatus === 'available'
       ? 'lark-cli is available, authenticated, and Feishu skills are detected.'
@@ -253,7 +411,7 @@ async function getFeishuStatus(ctx: PlatformAdapterContext): Promise<PlatformRun
         officialSkillCount: skillStatus.official.skillCount,
       },
     }],
-  }
+  }, ctx)
 }
 
 async function handleFeishuAction(
@@ -323,10 +481,56 @@ async function handleFeishuAction(
     }
   }
 
+  if (actionId === 'im.inspect') {
+    const updatedStatus = await getFeishuStatus(ctx)
+    return {
+      status: 'ok',
+      message: 'Feishu IM skeleton status inspected.',
+      updatedStatus,
+    }
+  }
+
   return {
     status: 'failed',
     message: `Action is not implemented: ${actionId}`,
   }
+}
+
+function withFeishuIMStatus(status: PlatformRuntimeStatus, ctx: PlatformAdapterContext): PlatformRuntimeStatus {
+  const imStatus = getFeishuIMRuntimeStatus(ctx)
+  const mergedStatus = imStatus.status === 'disabled'
+    ? status.status
+    : higherSeverity(status.status, imStatus.status)
+  return {
+    status: mergedStatus,
+    message: mergedStatus === imStatus.status
+      ? imStatus.message
+      : status.message,
+    cards: [
+      ...(status.cards ?? []),
+      ...(imStatus.cards ?? []),
+    ],
+    recentEvents: [
+      ...(status.recentEvents ?? []),
+      ...(imStatus.recentEvents ?? []),
+    ],
+  }
+}
+
+function higherSeverity(
+  left: PlatformRuntimeStatus['status'],
+  right: PlatformRuntimeStatus['status'],
+): PlatformRuntimeStatus['status'] {
+  return severity(right) > severity(left) ? right : left
+}
+
+function severity(status: PlatformRuntimeStatus['status']): number {
+  if (status === 'error') return 60
+  if (status === 'missing') return 50
+  if (status === 'auth-required') return 40
+  if (status === 'degraded') return 30
+  if (status === 'disabled') return 10
+  return 0
 }
 
 function buildFeishuContextBlocks(page: PageContextPayload, observedAt: number): PlatformContextBlock[] | undefined {

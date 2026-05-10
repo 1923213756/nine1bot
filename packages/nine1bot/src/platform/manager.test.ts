@@ -3,6 +3,7 @@ import { win32 as win32Path } from 'node:path'
 import type {
   PlatformAdapterContext,
   PlatformAdapterContribution,
+  PlatformBackgroundService,
   PlatformRuntimeSourcesDescriptor,
   PlatformRuntimeSourcesProvider,
   PlatformSecretAccess,
@@ -10,7 +11,7 @@ import type {
 import { RuntimePlatformAdapterRegistry } from '../../../../opencode/packages/opencode/src/runtime/platform/adapter'
 import { RuntimeSourceRegistry } from '../../../../opencode/packages/opencode/src/runtime/source/registry'
 import { PlatformAdapterManager } from './manager'
-import { registerBuiltinPlatformAdapters, resetBuiltinPlatformManagerForTesting } from './builtin'
+import { getBuiltinPlatformManager, registerBuiltinPlatformAdapters, resetBuiltinPlatformManagerForTesting } from './builtin'
 import { registerGitLabPlatformAdapter } from './gitlab'
 
 function resetPlatformState() {
@@ -89,6 +90,59 @@ function runtimeSources(): PlatformRuntimeSourcesDescriptor {
       visibility: 'declared-only',
       lifecycle: 'platform-enabled',
     }],
+  }
+}
+
+function backgroundContribution(
+  id: string,
+  options: {
+    defaultEnabled?: boolean
+    getStatus?: (startNumber: number) => { status: 'available' | 'degraded' | 'error' | 'disabled'; message?: string }
+    handleAction?: PlatformAdapterContribution['handleAction']
+    config?: PlatformAdapterContribution['descriptor']['config']
+    actions?: PlatformAdapterContribution['descriptor']['actions']
+  } = {},
+) {
+  let starts = 0
+  let stops = 0
+  const service: PlatformBackgroundService = {
+    id: `${id}-background`,
+    async start() {
+      starts += 1
+      const startNumber = starts
+      return {
+        async stop() {
+          stops += 1
+        },
+        getStatus() {
+          return options.getStatus?.(startNumber) ?? {
+            status: 'available',
+            message: `background run ${startNumber}`,
+          }
+        },
+      }
+    },
+  }
+
+  return {
+    contribution: {
+      ...contribution(id, { defaultEnabled: options.defaultEnabled }),
+      descriptor: {
+        ...contribution(id, { defaultEnabled: options.defaultEnabled }).descriptor,
+        config: options.config,
+        actions: options.actions,
+      },
+      backgroundServices: () => [service],
+      handleAction: options.handleAction,
+    } satisfies PlatformAdapterContribution,
+    counts: {
+      get starts() {
+        return starts
+      },
+      get stops() {
+        return stops
+      },
+    },
   }
 }
 
@@ -450,6 +504,152 @@ describe('PlatformAdapterManager', () => {
     expect(RuntimeSourceRegistry.listOwner('demo').agents).toEqual([])
   })
 
+  it('starts and stops background services for enabled platforms', async () => {
+    let starts = 0
+    let stops = 0
+    const service: PlatformBackgroundService = {
+      id: 'demo-background',
+      async start(ctx) {
+        starts++
+        expect(ctx.localUrl).toBe('http://127.0.0.1:4096')
+        expect(ctx.authHeader).toBe('Basic test')
+        return {
+          async stop() {
+            stops++
+          },
+          getStatus() {
+            return {
+              status: 'degraded',
+              message: 'background staged',
+            }
+          },
+        }
+      },
+    }
+    const manager = new PlatformAdapterManager({
+      contributions: [{
+        ...contribution('demo', { defaultEnabled: true }),
+        backgroundServices: () => [service],
+      }],
+    })
+
+    await manager.startBackgroundServices({
+      localUrl: 'http://127.0.0.1:4096',
+      authHeader: 'Basic test',
+    })
+
+    expect(starts).toBe(1)
+    expect(manager.get('demo')).toMatchObject({
+      lifecycleStatus: 'degraded',
+      runtimeStatus: {
+        status: 'degraded',
+        message: 'background staged',
+      },
+    })
+
+    await manager.stopBackgroundServices()
+    expect(stops).toBe(1)
+  })
+
+  it('does not start background services for disabled platforms', async () => {
+    let starts = 0
+    const manager = new PlatformAdapterManager({
+      contributions: [{
+        ...contribution('demo', { defaultEnabled: true }),
+        backgroundServices: () => [{
+          id: 'demo-background',
+          async start() {
+            starts++
+            return { async stop() {} }
+          },
+        }],
+      }],
+      config: {
+        demo: {
+          enabled: false,
+        },
+      },
+    })
+
+    await manager.startBackgroundServices({
+      localUrl: 'http://127.0.0.1:4096',
+    })
+
+    expect(starts).toBe(0)
+  })
+
+  it('stops previous background services before restart or reconfigure', async () => {
+    let starts = 0
+    let stops = 0
+    const manager = new PlatformAdapterManager({
+      contributions: [{
+        ...contribution('demo', { defaultEnabled: true }),
+        backgroundServices: () => [{
+          id: 'demo-background',
+          async start() {
+            starts++
+            return {
+              async stop() {
+                stops++
+              },
+            }
+          },
+        }],
+      }],
+    })
+
+    await manager.startBackgroundServices({ localUrl: 'http://127.0.0.1:4096' })
+    await manager.startBackgroundServices({ localUrl: 'http://127.0.0.1:4096' })
+
+    expect(starts).toBe(2)
+    expect(stops).toBe(1)
+
+    manager.configure({
+      demo: {
+        enabled: false,
+      },
+    })
+
+    expect(stops).toBe(2)
+    await manager.startBackgroundServices({ localUrl: 'http://127.0.0.1:4096' })
+    expect(starts).toBe(2)
+  })
+
+  it('waits for configure-triggered background service stops before starting new ones', async () => {
+    const events: string[] = []
+    let releaseStop: (() => void) | undefined
+    const manager = new PlatformAdapterManager({
+      contributions: [{
+        ...contribution('demo', { defaultEnabled: true }),
+        backgroundServices: () => [{
+          id: 'demo-background',
+          async start() {
+            events.push('start')
+            return {
+              async stop() {
+                events.push('stop-begin')
+                await new Promise<void>((resolve) => {
+                  releaseStop = resolve
+                })
+                events.push('stop-end')
+              },
+            }
+          },
+        }],
+      }],
+    })
+
+    await manager.startBackgroundServices({ localUrl: 'http://127.0.0.1:4096' })
+    manager.configure({ demo: { enabled: true } })
+    const restart = manager.startBackgroundServices({ localUrl: 'http://127.0.0.1:4096' })
+    await Promise.resolve()
+
+    expect(events).toEqual(['start', 'stop-begin'])
+    releaseStop?.()
+    await restart
+    expect(events).toEqual(['start', 'stop-begin', 'stop-end', 'start'])
+  })
+
   it('does not leave runtime sources behind when adapter creation fails', async () => {
     const manager = new PlatformAdapterManager({
       contributions: [
@@ -631,6 +831,113 @@ describe('PlatformAdapterManager', () => {
     })
   })
 
+  it('restarts previously started background services after re-enabling a platform', async () => {
+    const background = backgroundContribution('demo', { defaultEnabled: true })
+    const manager = new PlatformAdapterManager({
+      contributions: [background.contribution],
+    })
+    manager.registerRuntimeAdapters()
+
+    await manager.startBackgroundServices({ localUrl: 'http://127.0.0.1:4096' })
+    await manager.updateConfig('demo', { enabled: false })
+
+    expect(background.counts.starts).toBe(1)
+    expect(background.counts.stops).toBe(1)
+    expect(manager.get('demo')).toMatchObject({
+      enabled: false,
+      runtimeStatus: {
+        status: 'disabled',
+      },
+    })
+
+    await manager.updateConfig('demo', { enabled: true })
+
+    expect(background.counts.starts).toBe(2)
+    expect(background.counts.stops).toBe(1)
+    expect(manager.get('demo')).toMatchObject({
+      enabled: true,
+      runtimeStatus: {
+        status: 'available',
+        message: 'background run 2',
+      },
+    })
+  })
+
+  it('restarts started background services after settings-only updates', async () => {
+    const background = backgroundContribution('demo', {
+      defaultEnabled: true,
+      config: {
+        sections: [{
+          id: 'settings',
+          title: 'Settings',
+          fields: [{
+            key: 'mode',
+            label: 'Mode',
+            type: 'string',
+          }],
+        }],
+      },
+    })
+    const manager = new PlatformAdapterManager({
+      contributions: [background.contribution],
+    })
+    manager.registerRuntimeAdapters()
+
+    await manager.startBackgroundServices({ localUrl: 'http://127.0.0.1:4096' })
+    await manager.updateConfig('demo', {
+      settings: {
+        mode: 'next',
+      },
+    })
+
+    expect(background.counts.starts).toBe(2)
+    expect(background.counts.stops).toBe(1)
+    expect(manager.configSnapshot().demo?.settings).toEqual({
+      mode: 'next',
+    })
+    expect(manager.get('demo')).toMatchObject({
+      runtimeStatus: {
+        status: 'available',
+        message: 'background run 2',
+      },
+    })
+  })
+
+  it('does not auto-start background services on config updates before the first launch', async () => {
+    const background = backgroundContribution('demo', {
+      defaultEnabled: true,
+      config: {
+        sections: [{
+          id: 'settings',
+          title: 'Settings',
+          fields: [{
+            key: 'mode',
+            label: 'Mode',
+            type: 'string',
+          }],
+        }],
+      },
+    })
+    const manager = new PlatformAdapterManager({
+      contributions: [background.contribution],
+    })
+    manager.registerRuntimeAdapters()
+
+    await manager.updateConfig('demo', {
+      settings: {
+        mode: 'draft',
+      },
+    })
+
+    expect(background.counts.starts).toBe(0)
+    expect(background.counts.stops).toBe(0)
+    expect(manager.get('demo')).toMatchObject({
+      runtimeStatus: {
+        status: 'available',
+      },
+    })
+  })
+
   it('rejects invalid config without changing manager config', async () => {
     const manager = new PlatformAdapterManager({
       contributions: [{
@@ -804,6 +1111,108 @@ describe('PlatformAdapterManager', () => {
     })
   })
 
+  it('restarts started background services when actions update settings', async () => {
+    const background = backgroundContribution('demo', {
+      defaultEnabled: true,
+      config: {
+        sections: [{
+          id: 'settings',
+          title: 'Settings',
+          fields: [{
+            key: 'mode',
+            label: 'Mode',
+            type: 'string',
+          }],
+        }],
+      },
+      actions: [{
+        id: 'settings.apply',
+        label: 'Apply settings',
+        kind: 'button',
+      }],
+      handleAction: async () => ({
+        status: 'ok',
+        updatedSettings: {
+          mode: 'action',
+        },
+      }),
+    })
+    const manager = new PlatformAdapterManager({
+      contributions: [background.contribution],
+    })
+    manager.registerRuntimeAdapters()
+
+    await manager.startBackgroundServices({ localUrl: 'http://127.0.0.1:4096' })
+    await manager.executeAction('demo', 'settings.apply')
+
+    expect(background.counts.starts).toBe(2)
+    expect(background.counts.stops).toBe(1)
+    expect(manager.configSnapshot().demo?.settings).toEqual({
+      mode: 'action',
+    })
+    expect(manager.get('demo')).toMatchObject({
+      runtimeStatus: {
+        status: 'available',
+        message: 'background run 2',
+      },
+    })
+  })
+
+  it('keeps restarted background-service status instead of stale action updatedStatus', async () => {
+    const background = backgroundContribution('demo', {
+      defaultEnabled: true,
+      config: {
+        sections: [{
+          id: 'settings',
+          title: 'Settings',
+          fields: [{
+            key: 'mode',
+            label: 'Mode',
+            type: 'string',
+          }],
+        }],
+      },
+      actions: [{
+        id: 'settings.refresh',
+        label: 'Refresh settings',
+        kind: 'button',
+      }],
+      handleAction: async () => ({
+        status: 'ok',
+        updatedSettings: {
+          mode: 'fresh',
+        },
+        updatedStatus: {
+          status: 'disabled',
+          message: 'stale status',
+        },
+      }),
+    })
+    const manager = new PlatformAdapterManager({
+      contributions: [background.contribution],
+    })
+    manager.registerRuntimeAdapters()
+
+    await manager.startBackgroundServices({ localUrl: 'http://127.0.0.1:4096' })
+    const result = await manager.executeAction('demo', 'settings.refresh')
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      updatedStatus: {
+        status: 'disabled',
+        message: 'stale status',
+      },
+    })
+    expect(background.counts.starts).toBe(2)
+    expect(background.counts.stops).toBe(1)
+    expect(manager.get('demo')).toMatchObject({
+      runtimeStatus: {
+        status: 'available',
+        message: 'background run 2',
+      },
+    })
+  })
+
   it('guards platform actions by descriptor and confirmation', async () => {
     const manager = new PlatformAdapterManager({
       contributions: [{
@@ -863,5 +1272,33 @@ describe('PlatformAdapterManager', () => {
         message: 'connection failed',
       },
     })
+  })
+
+  it('reuses the built-in manager instance across config syncs with secrets', () => {
+    const firstSecrets = memorySecrets().access
+    const secondSecrets = memorySecrets().access
+
+    registerBuiltinPlatformAdapters({
+      config: {
+        feishu: {
+          enabled: true,
+        },
+      },
+      secrets: firstSecrets,
+    })
+    const firstManager = getBuiltinPlatformManager()
+
+    registerBuiltinPlatformAdapters({
+      config: {
+        feishu: {
+          enabled: false,
+        },
+      },
+      secrets: secondSecrets,
+    })
+    const secondManager = getBuiltinPlatformManager()
+
+    expect(secondManager).toBe(firstManager)
+    expect(RuntimePlatformAdapterRegistry.list().map((adapter) => adapter.id)).not.toContain('feishu')
   })
 })

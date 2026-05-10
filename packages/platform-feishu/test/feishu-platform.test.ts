@@ -2,15 +2,31 @@ import { describe, expect, test } from 'bun:test'
 import {
   buildFeishuPageContextPayload,
   createFeishuPlatformAdapter,
+  FEISHU_IM_DEFAULT_BUFFER_MS,
+  FEISHU_IM_DEFAULT_BUSY_TEXT,
+  FEISHU_IM_DEFAULT_MAX_BUFFER_MS,
+  FEISHU_IM_DEFAULT_REPLY_TIMEOUT_MS,
+  FEISHU_IM_DEFAULT_STREAMING_CARD_MAX_CHARS,
+  FEISHU_IM_DEFAULT_STREAMING_CARD_UPDATE_MS,
   feishuPlatformContribution,
   feishuTemplateIdsForPage,
+  normalizeFeishuIMConfig,
   parseFeishuUrl,
 } from '../src'
+import {
+  clearFeishuIMReplyRuntimeSummaryForTesting,
+  createFeishuIMBackgroundServices,
+} from '../src/im'
+import {
+  clearFeishuIMRuntimeSnapshotForTesting,
+  setFeishuIMRuntimeTestHooksForTesting,
+} from '../src/im/background-runtime'
 import {
   enrichFeishuPageContext,
   getFeishuAuthStatus,
   getFeishuCliVersion,
   parseVersion,
+  readFeishuContextEnrichmentSettings,
   resolveFeishuCliPath,
   runFeishuCliJsonWithFile,
   type FeishuCliRunner,
@@ -234,6 +250,136 @@ describe('Feishu platform adapter package', () => {
     expect(status?.cards).toContainEqual(expect.objectContaining({ id: 'context', value: 'auto' }))
     expect(status?.cards).toContainEqual(expect.objectContaining({ id: 'companion', value: FEISHU_CURRENT_PAGE_SKILL }))
     expect(status?.cards).toContainEqual(expect.objectContaining({ id: 'skills' }))
+  })
+
+  test('declares first-run defaults and placeholders in platform descriptor', () => {
+    const fields = new Map(
+      feishuPlatformContribution.descriptor.config?.sections
+        .flatMap((section) => section.fields)
+        .map((field) => [field.key, field]) ?? [],
+    )
+    const imDefaults = normalizeFeishuIMConfig({})
+    const enrichmentDefaults = readFeishuContextEnrichmentSettings({})
+
+    expect(fields.get('cliPath')).toMatchObject({
+      placeholder: expect.stringContaining('PATH'),
+    })
+    expect(fields.get('officialSkillsDirectory')).toMatchObject({
+      placeholder: expect.stringContaining('~/.agents/skills'),
+    })
+    expect(fields.get('contextEnrichment')).toMatchObject({
+      defaultValue: enrichmentDefaults.contextEnrichment,
+    })
+    expect(fields.get('metadataTimeoutMs')).toMatchObject({
+      defaultValue: enrichmentDefaults.metadataTimeoutMs,
+    })
+
+    expect(fields.get('imEnabled')).toMatchObject({ defaultValue: false })
+    expect(fields.get('imDefaultAppId')).toMatchObject({
+      placeholder: expect.stringContaining('enabling IM'),
+    })
+    expect(fields.get('imDefaultAppId')?.defaultValue).toBeUndefined()
+    expect(fields.get('imDefaultAppSecret')).toMatchObject({
+      secret: true,
+      placeholder: expect.stringContaining('enabling IM'),
+    })
+    expect(fields.get('imDefaultAppSecret')?.defaultValue).toBeUndefined()
+    expect(fields.get('imDefaultDirectory')).toMatchObject({
+      placeholder: expect.stringContaining('current project directory'),
+    })
+    expect(fields.get('imDefaultDirectory')?.defaultValue).toBeUndefined()
+
+    expect(fields.get('imConnectionMode')).toMatchObject({ defaultValue: imDefaults.connectionMode })
+    expect(fields.get('imDmPolicy')).toMatchObject({ defaultValue: imDefaults.policy.dmPolicy })
+    expect(fields.get('imGroupPolicy')).toMatchObject({ defaultValue: imDefaults.policy.groupPolicy })
+    expect(fields.get('imAllowFrom')).toMatchObject({ defaultValue: imDefaults.policy.allowFrom })
+    expect(fields.get('imReplyMode')).toMatchObject({ defaultValue: imDefaults.policy.replyMode })
+    expect(fields.get('imReplyPresentation')).toMatchObject({ defaultValue: imDefaults.policy.replyPresentation })
+    expect(fields.get('imReplyTimeoutMs')).toMatchObject({ defaultValue: FEISHU_IM_DEFAULT_REPLY_TIMEOUT_MS })
+    expect(fields.get('imStreamingCardUpdateMs')).toMatchObject({ defaultValue: FEISHU_IM_DEFAULT_STREAMING_CARD_UPDATE_MS })
+    expect(fields.get('imStreamingCardMaxChars')).toMatchObject({ defaultValue: FEISHU_IM_DEFAULT_STREAMING_CARD_MAX_CHARS })
+    expect(fields.get('imMessageBufferMs')).toMatchObject({ defaultValue: FEISHU_IM_DEFAULT_BUFFER_MS })
+    expect(fields.get('imMaxBufferMs')).toMatchObject({ defaultValue: FEISHU_IM_DEFAULT_MAX_BUFFER_MS })
+    expect(fields.get('imBusyRejectText')).toMatchObject({ defaultValue: FEISHU_IM_DEFAULT_BUSY_TEXT })
+    expect(fields.get('imAccounts')).toMatchObject({ defaultValue: [] })
+  })
+
+  test('registers Feishu IM reply settings in platform descriptor', () => {
+    const imSection = feishuPlatformContribution.descriptor.config?.sections.find((section) => section.id === 'im')
+    expect(imSection?.fields.map((field) => field.key)).toContain('imReplyPresentation')
+    expect(imSection?.fields.map((field) => field.key)).toContain('imReplyTimeoutMs')
+    expect(imSection?.fields.map((field) => field.key)).toContain('imStreamingCardUpdateMs')
+    expect(imSection?.fields.map((field) => field.key)).toContain('imStreamingCardMaxChars')
+    expect(imSection?.fields.find((field) => field.key === 'imReplyPresentation')).toMatchObject({
+      type: 'select',
+      options: ['auto', 'text', 'card', 'streaming-card'],
+    })
+  })
+
+  test('merges compact IM runtime cards into platform status details', async () => {
+    clearFeishuIMReplyRuntimeSummaryForTesting()
+    clearFeishuIMRuntimeSnapshotForTesting()
+    setFeishuIMRuntimeTestHooksForTesting({
+      createGateway: createAutoConnectedGatewayFactory(),
+    })
+
+    const ctx: PlatformAdapterContext = {
+      platformId: 'feishu',
+      enabled: true,
+      settings: {
+        imEnabled: true,
+        imDefaultAppId: 'cli_xxx',
+        imDefaultAppSecret: {
+          provider: 'nine1bot-local',
+          key: 'platform:feishu:default:imDefaultAppSecret',
+        },
+      },
+      features: {},
+      env: { PATH: '' },
+      secrets: {
+        async get() { return 'secret' },
+        async set() {},
+        async delete() {},
+        async has() { return true },
+      },
+      audit: {
+        write() {},
+      },
+    }
+
+    const services = createFeishuIMBackgroundServices(ctx)
+    expect(services).toHaveLength(1)
+    const handle = await services[0]!.start({
+      ...ctx,
+      localUrl: 'http://127.0.0.1:4096',
+    })
+
+    try {
+      const status = await feishuPlatformContribution.getStatus?.(ctx)
+      const ids = status?.cards?.map((card) => card.id) ?? []
+
+      expect(ids).toEqual(expect.arrayContaining([
+        'cli',
+        'auth',
+        'context',
+        'companion',
+        'skills',
+        'im-runtime',
+        'im-gateway-state',
+        'im-restart-attempts',
+        'im-accounts',
+      ]))
+      expect(ids).not.toContain('im-last-reply-error')
+      expect(ids).not.toContain('im-last-card-update-error')
+      expect(ids).not.toContain('im-last-streaming-fallback')
+      expect(ids).not.toContain('im-streaming-fallbacks')
+      expect(ids).not.toContain('im-buffer')
+      expect(ids).not.toContain('im-reply')
+    } finally {
+      await handle.stop()
+      clearFeishuIMReplyRuntimeSummaryForTesting()
+      clearFeishuIMRuntimeSnapshotForTesting()
+    }
   })
 
   test('handles official skills directory actions without mutating CLI auth state', async () => {
@@ -658,4 +804,38 @@ function restoreEnv(key: string, value: string | undefined) {
     return
   }
   process.env[key] = value
+}
+
+function createAutoConnectedGatewayFactory() {
+  return (options: {
+    account: { id: string }
+    onConnectionStateChange?: (event: {
+      accountId: string
+      state: 'connected' | 'reconnecting' | 'connection-error' | 'stopped'
+      at: string
+      message?: string
+    }) => void | Promise<void>
+  }) => ({
+    async start() {
+      await options.onConnectionStateChange?.({
+        accountId: options.account.id,
+        state: 'connected',
+        at: new Date().toISOString(),
+      })
+    },
+    async stop() {
+      await options.onConnectionStateChange?.({
+        accountId: options.account.id,
+        state: 'stopped',
+        at: new Date().toISOString(),
+      })
+    },
+    async injectMessage() {},
+    async injectCardAction() {
+      return undefined
+    },
+    isStarted() {
+      return true
+    },
+  })
 }

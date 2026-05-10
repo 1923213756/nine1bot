@@ -5,8 +5,10 @@ import type {
   PlatformAdapterContribution,
   PlatformAuditEntry,
   PlatformAuditWriter,
+  PlatformBackgroundServiceHandle,
   PlatformConfigDescriptor,
   PlatformConfigField,
+  PlatformControllerBridge,
   PlatformDescriptor,
   PlatformRuntimeSourcesDescriptor,
   PlatformRuntimeSourcesProvider,
@@ -123,6 +125,21 @@ export type PlatformAdapterManagerOptions = {
   env?: Record<string, string | undefined>
 }
 
+export type PlatformBackgroundServicesStartOptions = {
+  localUrl: string
+  authHeader?: string
+  controller?: PlatformControllerBridge
+  legacySettings?: Record<string, unknown>
+  projectId?: string
+  projectDirectory?: string
+}
+
+type ActivePlatformBackgroundService = {
+  platformId: string
+  serviceId: string
+  handle: PlatformBackgroundServiceHandle
+}
+
 export class PlatformNotFoundError extends Error {
   constructor(readonly platformId: string) {
     super(`Platform not found: ${platformId}`)
@@ -178,9 +195,12 @@ const noopAudit: PlatformAuditWriter = {
 export class PlatformAdapterManager {
   private readonly contributions = new Map<string, PlatformAdapterContribution>()
   private readonly records = new Map<string, PlatformManagerRecord>()
+  private readonly backgroundServices = new Map<string, ActivePlatformBackgroundService>()
   private readonly secrets: PlatformSecretAccess
   private readonly audit: PlatformAuditWriter
   private readonly env: Record<string, string | undefined>
+  private backgroundStopPromise: Promise<void> | undefined
+  private lastBackgroundServicesStartOptions: PlatformBackgroundServicesStartOptions | undefined
   private config: PlatformManagerConfig
 
   constructor(options: PlatformAdapterManagerOptions) {
@@ -196,6 +216,7 @@ export class PlatformAdapterManager {
   }
 
   configure(config: PlatformManagerConfig) {
+    void this.stopBackgroundServices()
     this.unregisterRuntimeAdapters()
     this.config = normalizeConfig(config)
     this.rebuildRecords()
@@ -292,7 +313,100 @@ export class PlatformAdapterManager {
     return this.list()
   }
 
+  async startBackgroundServices(options: PlatformBackgroundServicesStartOptions): Promise<PlatformManagerRecord[]> {
+    this.lastBackgroundServicesStartOptions = {
+      ...options,
+    }
+    await this.stopBackgroundServices()
+
+    for (const contribution of this.contributions.values()) {
+      const record = this.records.get(contribution.descriptor.id)
+      if (!record?.installed || !record.enabled) continue
+
+      const baseContext = this.createContext(record)
+      const services = contribution.backgroundServices?.(baseContext) ?? []
+      for (const service of services) {
+        const serviceKey = `${record.id}:${service.id}`
+        try {
+          const handle = await service.start({
+            ...baseContext,
+            projectId: options.projectId,
+            projectDirectory: options.projectDirectory,
+            localUrl: options.localUrl,
+            authHeader: options.authHeader,
+            controller: options.controller,
+            legacySettings: options.legacySettings,
+          })
+          this.backgroundServices.set(serviceKey, {
+            platformId: record.id,
+            serviceId: service.id,
+            handle,
+          })
+          const status = handle.getStatus?.()
+          if (status) {
+            this.applyRuntimeStatus(record.id, status)
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          const status: PlatformRuntimeStatus = {
+            status: 'error',
+            message,
+          }
+          this.applyRuntimeStatus(record.id, status)
+          this.writeAudit({
+            platformId: record.id,
+            level: 'error',
+            stage: 'background-service-start',
+            message,
+            reason: 'background-service-failed',
+            data: {
+              serviceId: service.id,
+            },
+          })
+        }
+      }
+    }
+
+    return this.list()
+  }
+
+  async stopBackgroundServices(): Promise<void> {
+    const active = Array.from(this.backgroundServices.values())
+    this.backgroundServices.clear()
+    const stopActive = async () => {
+      await Promise.all(active.map(async (service) => {
+        try {
+          await service.handle.stop()
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          this.writeAudit({
+            platformId: service.platformId,
+            level: 'warn',
+            stage: 'background-service-stop',
+            message,
+            reason: 'background-service-stop-failed',
+            data: {
+              serviceId: service.serviceId,
+            },
+          })
+        }
+      }))
+    }
+    const previousStop = this.backgroundStopPromise
+    const stopPromise = previousStop
+      ? previousStop.then(stopActive, stopActive)
+      : stopActive()
+    const trackedPromise = stopPromise.finally(() => {
+      if (this.backgroundStopPromise === trackedPromise) {
+        this.backgroundStopPromise = undefined
+      }
+    })
+    this.backgroundStopPromise = trackedPromise
+    await this.backgroundStopPromise
+  }
+
   unregisterRuntimeAdapters(): PlatformManagerRecord[] {
+    void this.stopBackgroundServices()
     for (const record of this.records.values()) {
       if (record.registered) {
         RuntimePlatformAdapterRegistry.unregister(record.id)
@@ -330,8 +444,7 @@ export class PlatformAdapterManager {
       ...this.config,
       [id]: nextEntry,
     }
-    this.configure(nextConfig)
-    this.registerRuntimeAdapters()
+    await this.reconfigureAndRestartBackgroundServices(nextConfig)
     const updated = this.records.get(id)
     if (!updated) throw new PlatformNotFoundError(id)
     return cloneRecord(updated)
@@ -438,6 +551,7 @@ export class PlatformAdapterManager {
         }
       }
       let currentRecord = record
+      let restartedBackgroundServices = false
       if (result.updatedSettings !== undefined) {
         const previousEntry = this.config[id] ?? {}
         const nextEntry = await this.prepareConfigEntry(record, previousEntry, {
@@ -447,14 +561,13 @@ export class PlatformAdapterManager {
         if (!validation.ok) {
           throw new PlatformValidationError(validation.message ?? 'Invalid platform config', validation.fieldErrors ?? {})
         }
-        this.configure({
+        restartedBackgroundServices = await this.reconfigureAndRestartBackgroundServices({
           ...this.config,
           [id]: nextEntry,
         })
-        this.registerRuntimeAdapters()
         currentRecord = this.records.get(id) ?? currentRecord
       }
-      if (result.updatedStatus) {
+      if (result.updatedStatus && !restartedBackgroundServices) {
         this.records.set(id, {
           ...currentRecord,
           lifecycleStatus: lifecycleStatusFromRuntime(result.updatedStatus.status),
@@ -551,6 +664,18 @@ export class PlatformAdapterManager {
       runtimeStatus: { status: 'available' },
       error: undefined,
       errorAt: undefined,
+    })
+  }
+
+  private applyRuntimeStatus(id: string, runtimeStatus: PlatformRuntimeStatus) {
+    const record = this.records.get(id)
+    if (!record) return
+    this.records.set(id, {
+      ...record,
+      lifecycleStatus: lifecycleStatusFromRuntime(runtimeStatus.status),
+      runtimeStatus,
+      error: runtimeStatus.status === 'error' ? runtimeStatus.message : undefined,
+      errorAt: runtimeStatus.status === 'error' ? new Date().toISOString() : undefined,
     })
   }
 
@@ -767,6 +892,32 @@ export class PlatformAdapterManager {
     } catch {
       // Audit is best-effort for the platform manager.
     }
+  }
+
+  private async reconfigureAndRestartBackgroundServices(nextConfig: PlatformManagerConfig): Promise<boolean> {
+    await this.stopBackgroundServices()
+    this.configure(nextConfig)
+    this.registerRuntimeAdapters()
+    return this.restartBackgroundServicesIfNeeded()
+  }
+
+  private async restartBackgroundServicesIfNeeded(): Promise<boolean> {
+    if (!this.lastBackgroundServicesStartOptions || !this.hasConfiguredBackgroundServices()) {
+      return false
+    }
+    await this.startBackgroundServices(this.lastBackgroundServicesStartOptions)
+    return true
+  }
+
+  private hasConfiguredBackgroundServices(): boolean {
+    for (const record of this.records.values()) {
+      if (!record.installed || !record.enabled) continue
+      const contribution = this.contributions.get(record.id)
+      if (!contribution?.backgroundServices) continue
+      const services = contribution.backgroundServices(this.createContext(record))
+      if (services.length > 0) return true
+    }
+    return false
   }
 }
 

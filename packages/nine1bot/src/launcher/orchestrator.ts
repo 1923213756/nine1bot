@@ -5,7 +5,11 @@ import type { Nine1BotConfig } from '../config/schema'
 import { loadConfig, findConfigPath, getDefaultConfigPath } from '../config/loader'
 import { startServer, type ServerInstance } from './server'
 import { createTunnel, type TunnelManager } from '../tunnel'
-import { startFeishuService, type FeishuServiceHandle } from '../feishu/service'
+import {
+  startBuiltinPlatformBackgroundServices,
+  stopBuiltinPlatformBackgroundServices,
+} from '../platform/builtin'
+import type { PlatformControllerBridge } from '@nine1bot/platform-protocol'
 
 const execFileAsync = promisify(execFile)
 
@@ -20,7 +24,6 @@ export interface LaunchOptions {
 export interface LaunchResult {
   server: ServerInstance
   tunnel?: TunnelManager
-  feishu?: FeishuServiceHandle
   localUrl: string
   publicUrl?: string
   configPath: string
@@ -58,14 +61,16 @@ export async function launch(options: LaunchOptions = {}): Promise<LaunchResult>
 
   const localUrl = server.url || `http://${serverConfig.hostname}:${serverConfig.port}`
   process.env.NINE1BOT_LOCAL_URL = localUrl
+  const authHeader = createAuthHeader(config.auth)
 
-  let feishu: FeishuServiceHandle | undefined
-  if (config.feishu?.enabled) {
-    feishu = await startFeishuService(config.feishu, {
-      localUrl,
-      auth: config.auth,
-    })
-  }
+  await startBuiltinPlatformBackgroundServices({
+    localUrl,
+    authHeader,
+    controller: createPlatformControllerBridge(localUrl, authHeader),
+    legacySettings: {
+      feishu: config.feishu,
+    },
+  })
 
   // 2. 创建隧道（如果启用）
   let tunnel: TunnelManager | undefined
@@ -112,7 +117,6 @@ export async function launch(options: LaunchOptions = {}): Promise<LaunchResult>
   return {
     server,
     tunnel,
-    feishu,
     localUrl,
     publicUrl,
     configPath,
@@ -132,12 +136,10 @@ export async function shutdown(result: LaunchResult): Promise<void> {
     }
   }
 
-  if (result.feishu) {
-    try {
-      await result.feishu.stop()
-    } catch {
-      // 忽略停止飞书服务时的错误
-    }
+  try {
+    await stopBuiltinPlatformBackgroundServices()
+  } catch {
+    // 忽略停止平台后台服务时的错误
   }
 
   // 停止服务器
@@ -147,6 +149,40 @@ export async function shutdown(result: LaunchResult): Promise<void> {
     } catch {
       // 忽略停止服务器时的错误
     }
+  }
+}
+
+function createAuthHeader(auth: Nine1BotConfig['auth']): string | undefined {
+  return auth?.enabled && auth.password
+    ? `Basic ${Buffer.from(`nine1bot:${auth.password}`).toString('base64')}`
+    : undefined
+}
+
+function createPlatformControllerBridge(localUrl: string, authHeader?: string): PlatformControllerBridge {
+  return {
+    localUrl,
+    authHeader,
+    async requestJson(path, init = {}) {
+      const url = new URL(path, localUrl)
+      const headers = new Headers(init.headers)
+      if (authHeader) headers.set('authorization', authHeader)
+      if (init.body !== undefined && !headers.has('content-type')) {
+        headers.set('content-type', 'application/json')
+      }
+      const response = await fetch(url, {
+        method: init.method ?? 'GET',
+        headers,
+        body: init.body === undefined
+          ? undefined
+          : typeof init.body === 'string'
+            ? init.body
+            : JSON.stringify(init.body),
+      })
+      if (!response.ok) {
+        throw new Error(`Controller request failed: ${response.status} ${response.statusText}`)
+      }
+      return await response.json()
+    },
   }
 }
 

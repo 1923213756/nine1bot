@@ -1906,6 +1906,8 @@ export interface PlatformConfigField {
   description?: string
   required?: boolean
   options?: string[]
+  defaultValue?: unknown
+  placeholder?: string
   secret?: boolean
 }
 
