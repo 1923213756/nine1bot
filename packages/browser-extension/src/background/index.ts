@@ -5,7 +5,13 @@
  * It initializes the Relay Client that connects to Nine1Bot's built-in /browser relay.
  */
 
-import { initRelayClient, isRelayConnected, connectToRelay, activateDedicatedNine1TabGroup } from './relay-client'
+import {
+  initRelayClient,
+  isRelayConnected,
+  connectToRelay,
+  activateDedicatedNine1TabGroup,
+  getRelayStatusSnapshot,
+} from './relay-client'
 import { SIDE_PANEL_OPEN_NONCE_STORAGE_KEY } from '../shared/server-config'
 
 console.log('[Nine1Bot Browser Control] Service Worker starting...')
@@ -73,7 +79,7 @@ chrome.commands.onCommand.addListener((command, tab) => {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'nine1bot-sidepanel-health-check') {
-    sendResponse({ connected: isRelayConnected() })
+    sendResponse(getRelayStatusSnapshot())
     return true
   }
   if (message?.type === 'nine1bot-sidepanel-ensure-tab-group') {

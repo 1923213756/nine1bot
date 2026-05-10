@@ -76,6 +76,32 @@ export namespace Server {
     return normalized === "127.0.0.1" || normalized === "::1" || normalized === "::ffff:127.0.0.1"
   }
 
+  function isPrivateNetworkAddress(address: string | undefined) {
+    if (!address) return false
+    const normalized = address.trim().toLowerCase()
+    if (isLoopbackAddress(normalized)) return true
+
+    const ipv4 = normalized.startsWith("::ffff:") ? normalized.slice("::ffff:".length) : normalized
+    const match = ipv4.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+    if (match) {
+      const [a, b, c, d] = match.slice(1).map(Number)
+      if ([a, b, c, d].some((value) => Number.isNaN(value) || value < 0 || value > 255)) return false
+      if (a === 10) return true
+      if (a === 127) return true
+      if (a === 169 && b === 254) return true
+      if (a === 172 && b >= 16 && b <= 31) return true
+      if (a === 192 && b === 168) return true
+      return false
+    }
+
+    return normalized.startsWith("fc")
+      || normalized.startsWith("fd")
+      || normalized.startsWith("fe8")
+      || normalized.startsWith("fe9")
+      || normalized.startsWith("fea")
+      || normalized.startsWith("feb")
+  }
+
   function normalizeForwardedAddress(address: string | undefined) {
     if (!address) return undefined
     let normalized = address.trim().toLowerCase()
@@ -137,7 +163,7 @@ export namespace Server {
   function hasOnlyLoopbackForwardedAddresses(headers: Record<string, string | undefined>) {
     const forwardedAddresses = getForwardedAddresses(headers)
     if (hasForwardedHeader(headers) && forwardedAddresses.length === 0) return false
-    return forwardedAddresses.every((address) => isLoopbackAddress(address))
+    return forwardedAddresses.every((address) => isPrivateNetworkAddress(address))
   }
 
   export function isLocalBrowserRelayAuthBypass(
@@ -146,7 +172,7 @@ export namespace Server {
     headers: Record<string, string | undefined> = {},
   ) {
     if (!localBrowserRelayAuthBypassPaths.has(path.replace(/\/$/, ""))) return false
-    if (!isLoopbackAddress(remoteAddress)) return false
+    if (!isPrivateNetworkAddress(remoteAddress)) return false
     return hasOnlyLoopbackForwardedAddresses(headers)
   }
 

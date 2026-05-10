@@ -25,6 +25,10 @@ interface BrowserRelaySettings {
   extensionUrl: string
   serverReachable: boolean
   relayConnected: boolean
+  relayStatus?: 'connecting' | 'connected' | 'reconnecting' | 'offline' | 'replaced'
+  instanceId?: string
+  instanceLabel?: string
+  browserAgentId?: string
   message?: string
 }
 
@@ -103,6 +107,21 @@ function applyRelaySettings(next?: BrowserRelaySettings) {
   if (!next) return
   relaySettings.value = next
   relayDraft.value = next.origin || relayDraft.value
+}
+
+function relayStatusLabel(settings: BrowserRelaySettings) {
+  if (!settings.serverReachable) return '主进程不可访问'
+  switch (settings.relayStatus) {
+    case 'connected':
+      return 'Connected'
+    case 'reconnecting':
+    case 'connecting':
+      return 'Reconnecting'
+    case 'replaced':
+      return 'Replaced'
+    default:
+      return settings.relayConnected ? 'Connected' : 'Offline'
+  }
 }
 
 function toggleValue(list: string[], value: string) {
@@ -386,7 +405,8 @@ onUnmounted(() => {
               <Link2 :size="15" />
               <span>
                 {{ relaySettings.serverReachable ? 'Nine1Bot 主进程可访问' : 'Nine1Bot 主进程不可访问' }}
-                <template v-if="relaySettings.serverReachable"> · {{ relaySettings.relayConnected ? 'relay 已连接' : 'relay 重连中' }}</template>
+                <template v-if="relaySettings.serverReachable"> · {{ relayStatusLabel(relaySettings) }}</template>
+                <template v-if="relaySettings.browserAgentId"> · agent {{ relaySettings.browserAgentId }}</template>
               </span>
             </div>
             <div v-if="relayMessage" class="status-message" :class="relayTone">{{ relayMessage }}</div>

@@ -407,6 +407,15 @@ Possible questions to ask:
                     })) as MessageV2.ToolPart
                     await publishToolFailed(updated, value.error)
 
+                    const browserAgentError =
+                      value.error instanceof Error
+                      && ["AGENT_OFFLINE", "AGENT_REPLACED", "AGENT_NOT_BOUND", "INSTANCE_MISMATCH"].includes(value.error.name)
+                    if (browserAgentError) {
+                      blocked = shouldBreak
+                      delete toolcalls[value.toolCallId]
+                      break
+                    }
+
                     // In autonomous mode, only block on explicit user rejection (RejectedError)
                     // CorrectedError and other errors should allow the LLM to try alternatives
                     if (

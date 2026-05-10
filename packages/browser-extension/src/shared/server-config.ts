@@ -6,6 +6,7 @@ export const SERVER_ORIGIN_STORAGE_KEY = BROWSER_RELAY_ORIGIN_STORAGE_KEY
 export const LEGACY_WEB_UI_URL_STORAGE_KEY = 'webUiUrl'
 export const LEGACY_RELAY_URL_STORAGE_KEY = 'relayUrl'
 export const SIDE_PANEL_OPEN_NONCE_STORAGE_KEY = 'sidePanelOpenNonce'
+export const BROWSER_AGENT_ID_STORAGE_KEY = 'browserAgentId'
 
 export interface StoredServerConfig {
   browserRelayOrigin?: unknown
@@ -14,15 +15,67 @@ export interface StoredServerConfig {
   relayUrl?: unknown
 }
 
-export function isAllowedLocalServerOrigin(url: URL): boolean {
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase()
+  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1'
+}
+
+function isPrivateIpv4(hostname: string): boolean {
+  const match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (!match) return false
+  const octets = match.slice(1).map(Number)
+  if (octets.some((value) => Number.isNaN(value) || value < 0 || value > 255)) return false
+
+  const [a, b] = octets
+  if (a === 10) return true
+  if (a === 127) return true
+  if (a === 169 && b === 254) return true
+  if (a === 172 && b >= 16 && b <= 31) return true
+  if (a === 192 && b === 168) return true
+  return false
+}
+
+function isPrivateIpv6(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase()
+  if (!normalized.includes(':')) return false
+  if (normalized === '::1') return true
+  return normalized.startsWith('fc')
+    || normalized.startsWith('fd')
+    || normalized.startsWith('fe8')
+    || normalized.startsWith('fe9')
+    || normalized.startsWith('fea')
+    || normalized.startsWith('feb')
+}
+
+function isLikelyIntranetHostname(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase()
+  if (!normalized) return false
+  if (!normalized.includes('.')) return true
+
+  const allowedSuffixes = [
+    '.local',
+    '.lan',
+    '.internal',
+    '.home',
+    '.corp',
+    '.localdomain',
+  ]
+
+  return allowedSuffixes.some((suffix) => normalized.endsWith(suffix))
+}
+
+export function isAllowedServerOrigin(url: URL): boolean {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
-  return url.hostname === '127.0.0.1' || url.hostname === 'localhost'
+  if (isLoopbackHostname(url.hostname)) return true
+  if (isPrivateIpv4(url.hostname)) return true
+  if (isPrivateIpv6(url.hostname)) return true
+  return isLikelyIntranetHostname(url.hostname)
 }
 
 export function normalizeServerOrigin(serverOrigin: string, fallback = DEFAULT_SERVER_ORIGIN): string {
   try {
     const parsed = new URL(serverOrigin.trim())
-    if (!isAllowedLocalServerOrigin(parsed)) return fallback
+    if (!isAllowedServerOrigin(parsed)) return fallback
     return `${parsed.protocol}//${parsed.host}`
   } catch {
     return fallback

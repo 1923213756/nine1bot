@@ -2,8 +2,10 @@ import z from "zod"
 import { Tool } from "./tool"
 import { getBridgeServer } from "../browser/bridge"
 import { Identifier } from "../id/id"
+import { Session } from "../session"
 
 type BrowserTarget = "user" | "bot"
+type BrowserAgentBinding = { instanceId: string; browserAgentId: string }
 
 function requireBridge() {
   const bridge = getBridgeServer()
@@ -11,6 +13,40 @@ function requireBridge() {
     throw new Error("Browser control not enabled. Enable it in your Nine1Bot config.")
   }
   return bridge
+}
+
+function browserToolError(
+  code: "AGENT_OFFLINE" | "AGENT_REPLACED" | "AGENT_NOT_BOUND" | "INSTANCE_MISMATCH",
+  message: string,
+) {
+  const error = new Error(message)
+  error.name = code
+  return error
+}
+
+async function resolveBrowserExecution(sessionID: string, requestedBrowser?: BrowserTarget): Promise<{
+  browser: BrowserTarget | undefined
+  binding?: BrowserAgentBinding
+}> {
+  const session = await Session.get(sessionID).catch(() => undefined)
+  const client = session?.client
+  const isBrowserSession = client?.source === "browser-extension" || client?.mode === "browser-sidepanel"
+  const instanceId = typeof client?.instanceId === "string" && client.instanceId.trim() ? client.instanceId : undefined
+  const browserAgentId =
+    typeof client?.browserAgentId === "string" && client.browserAgentId.trim() ? client.browserAgentId : undefined
+  const binding = instanceId && browserAgentId ? { instanceId, browserAgentId } : undefined
+
+  if ((requestedBrowser === "user" || isBrowserSession) && !binding) {
+    throw browserToolError(
+      "AGENT_NOT_BOUND",
+      "This session is not bound to a browser agent. Reopen the browser extension or rebind the current session.",
+    )
+  }
+
+  return {
+    browser: requestedBrowser ?? (binding ? "user" : undefined),
+    binding,
+  }
 }
 
 const browserParam = z
@@ -38,7 +74,8 @@ Call this first to discover which browsers are available and get tab IDs.`,
     })
 
     const bridge = requireBridge()
-    const status = await bridge.getStatus()
+    const execution = await resolveBrowserExecution(ctx.sessionID)
+    const status = await bridge.getStatus(execution.binding)
 
     const lines: string[] = []
 
@@ -74,11 +111,15 @@ Call this first to discover which browsers are available and get tab IDs.`,
         + `${status.runtime.extension.version ? ` (v${status.runtime.extension.version})` : ""}`,
       )
 
-      if (status.runtime.extension.serverOrigin || status.runtime.extension.pairedInstanceId) {
+      if (status.runtime.extension.serverOrigin || status.runtime.extension.browserAgentId) {
         lines.push(
           `  Extension pairing: ${status.runtime.extension.serverOrigin ?? "unknown origin"}`
-          + `${status.runtime.extension.pairedInstanceId ? ` / ${status.runtime.extension.pairedInstanceId}` : ""}`,
+          + `${status.runtime.extension.browserAgentId ? ` / ${status.runtime.extension.browserAgentId}` : ""}`,
         )
+      }
+
+      if (status.runtime.extension.connectedAgents > 0) {
+        lines.push(`  Connected agents: ${status.runtime.extension.connectedAgents}`)
       }
 
       for (const conflict of status.runtime.conflicts) {
@@ -161,6 +202,7 @@ Parameters:
     })
 
     const bridge = requireBridge()
+    const execution = await resolveBrowserExecution(ctx.sessionID, params.browser as BrowserTarget | undefined)
     const result = await bridge.snapshot(
       params.tabId,
       {
@@ -171,7 +213,8 @@ Parameters:
         maxNodes: params.maxNodes,
         includeShadow: params.includeShadow,
       },
-      params.browser as BrowserTarget | undefined,
+      execution.browser,
+      execution.binding,
     )
 
     return {
@@ -204,10 +247,12 @@ Parameters:
     })
 
     const bridge = requireBridge()
+    const execution = await resolveBrowserExecution(ctx.sessionID, params.browser as BrowserTarget | undefined)
     const result = await bridge.screenshot(
       params.tabId,
       { fullPage: params.fullPage },
-      params.browser as BrowserTarget | undefined,
+      execution.browser,
+      execution.binding,
     )
 
     return {
@@ -255,10 +300,12 @@ Parameters:
     })
 
     const bridge = requireBridge()
+    const execution = await resolveBrowserExecution(ctx.sessionID, params.browser as BrowserTarget | undefined)
     const result = await bridge.navigate(
       params.tabId,
       { url: params.url, action: params.action },
-      params.browser as BrowserTarget | undefined,
+      execution.browser,
+      execution.binding,
     )
 
     const action = params.action ?? "goto"
@@ -309,6 +356,7 @@ Parameters:
     })
 
     const bridge = requireBridge()
+    const execution = await resolveBrowserExecution(ctx.sessionID, params.browser as BrowserTarget | undefined)
     await bridge.clickElement(
       params.tabId,
       {
@@ -318,7 +366,8 @@ Parameters:
         button: params.button,
         clickCount: params.clickCount,
       },
-      params.browser as BrowserTarget | undefined,
+      execution.browser,
+      execution.binding,
     )
 
     const target = params.targetId ? `targetId=${params.targetId}` : params.ref ? `ref=${params.ref}` : `(${params.coordinate?.join(", ")})`
@@ -362,12 +411,14 @@ Parameters:
     }
 
     const bridge = requireBridge()
+    const execution = await resolveBrowserExecution(ctx.sessionID, params.browser as BrowserTarget | undefined)
     const result = await bridge.fillForm(
       params.tabId,
       params.ref,
       params.value,
-      params.browser as BrowserTarget | undefined,
+      execution.browser,
       params.targetId,
+      execution.binding,
     )
 
     if (!result.success) {
@@ -406,7 +457,8 @@ Parameters:
     })
 
     const bridge = requireBridge()
-    await bridge.pressKey(params.tabId, params.key, params.browser as BrowserTarget | undefined)
+    const execution = await resolveBrowserExecution(ctx.sessionID, params.browser as BrowserTarget | undefined)
+    await bridge.pressKey(params.tabId, params.key, execution.browser, execution.binding)
 
     return {
       title: `Pressed ${params.key}`,
@@ -442,12 +494,14 @@ Parameters:
     })
 
     const bridge = requireBridge()
+    const execution = await resolveBrowserExecution(ctx.sessionID, params.browser as BrowserTarget | undefined)
     await bridge.scroll(
       params.tabId,
       params.direction,
       params.amount,
       params.ref,
-      params.browser as BrowserTarget | undefined,
+      execution.browser,
+      execution.binding,
     )
 
     return {
@@ -482,11 +536,13 @@ Parameters:
     })
 
     const bridge = requireBridge()
+    const execution = await resolveBrowserExecution(ctx.sessionID, params.browser as BrowserTarget | undefined)
     const found = await bridge.waitForText(
       params.tabId,
       params.text,
       params.timeout,
-      params.browser as BrowserTarget | undefined,
+      execution.browser,
+      execution.binding,
     )
 
     return {
@@ -521,7 +577,8 @@ Parameters:
     })
 
     const bridge = requireBridge()
-    await bridge.handleDialog(params.action, params.promptText, params.browser as BrowserTarget | undefined)
+    const execution = await resolveBrowserExecution(ctx.sessionID, params.browser as BrowserTarget | undefined)
+    await bridge.handleDialog(params.action, params.promptText, execution.browser, execution.binding)
 
     return {
       title: `Dialog ${params.action}ed`,
@@ -565,6 +622,7 @@ Parameters:
     })
 
     const bridge = requireBridge()
+    const execution = await resolveBrowserExecution(ctx.sessionID, params.browser as BrowserTarget | undefined)
     const result = await bridge.locateElements(
       params.tabId,
       {
@@ -575,7 +633,8 @@ Parameters:
         maxResults: params.maxResults,
         timeoutMs: params.timeoutMs,
       },
-      params.browser as BrowserTarget | undefined,
+      execution.browser,
+      execution.binding,
     )
 
     if (!result.matches || result.matches.length === 0) {
@@ -633,10 +692,12 @@ Parameters:
     })
 
     const bridge = requireBridge()
+    const execution = await resolveBrowserExecution(ctx.sessionID, params.browser as BrowserTarget | undefined)
     const matches = await bridge.findElements(
       params.tabId,
       params.query,
-      params.browser as BrowserTarget | undefined,
+      execution.browser,
+      execution.binding,
     )
 
     if (matches.length === 0) {
@@ -684,11 +745,13 @@ Parameters:
     })
 
     const bridge = requireBridge()
+    const execution = await resolveBrowserExecution(ctx.sessionID, params.browser as BrowserTarget | undefined)
     await bridge.uploadFile(
       params.tabId,
       params.ref,
       params.filePath,
-      params.browser as BrowserTarget | undefined,
+      execution.browser,
+      execution.binding,
     )
 
     return {
@@ -721,10 +784,12 @@ Parameters:
     })
 
     const bridge = requireBridge()
+    const execution = await resolveBrowserExecution(ctx.sessionID, params.browser as BrowserTarget | undefined)
     const result = await bridge.evaluate(
       params.tabId,
       params.expression,
-      params.browser as BrowserTarget | undefined,
+      execution.browser,
+      execution.binding,
     )
 
     const output = result !== undefined ? JSON.stringify(result, null, 2) : "undefined"
@@ -765,6 +830,7 @@ Parameters:
     })
 
     const bridge = requireBridge()
+    const execution = await resolveBrowserExecution(ctx.sessionID, params.browser as BrowserTarget | undefined)
     const entries = await bridge.readConsoleMessages(
       params.tabId,
       {
@@ -773,7 +839,8 @@ Parameters:
         sinceMs: params.sinceMs,
         level: params.level,
       },
-      params.browser as BrowserTarget | undefined,
+      execution.browser,
+      execution.binding,
     )
 
     return {
@@ -812,6 +879,7 @@ Parameters:
     })
 
     const bridge = requireBridge()
+    const execution = await resolveBrowserExecution(ctx.sessionID, params.browser as BrowserTarget | undefined)
     const entries = await bridge.readNetworkRequests(
       params.tabId,
       {
@@ -820,7 +888,8 @@ Parameters:
         sinceMs: params.sinceMs,
         resourceType: params.resourceType,
       },
-      params.browser as BrowserTarget | undefined,
+      execution.browser,
+      execution.binding,
     )
 
     return {

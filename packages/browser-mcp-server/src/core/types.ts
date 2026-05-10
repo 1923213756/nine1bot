@@ -51,6 +51,34 @@ export interface ExtensionToolResult {
 /** Target browser: user's browser (Extension) or bot's browser (CDP) */
 export type BrowserTarget = 'user' | 'bot'
 
+export interface BrowserAgentBinding {
+  instanceId: string
+  browserAgentId: string
+}
+
+export interface BrowserRuntimeAgentStatus {
+  instanceId: string
+  browserAgentId: string
+  connectionId: string
+  status: 'connecting' | 'online' | 'stale' | 'replaced' | 'offline' | 'disposed'
+  connectedAt: number | null
+  lastSeenAt: number
+  disconnectReason: string | null
+  tools: string[]
+  targetCount: number
+  tabCount?: number
+  attachedTabCount?: number
+}
+
+export interface BrowserRuntimeRecentEvent {
+  instanceId: string
+  browserAgentId: string
+  connectionId: string
+  disconnectReason: string
+  disconnectedAt: number
+  lastSeenAt: number
+}
+
 /** Status of both browser channels */
 export interface BrowserStatus {
   user: {
@@ -82,11 +110,14 @@ export interface BrowserRuntimeStatus {
   instanceId: string
   extension: {
     connected: boolean
+    connectedAgents: number
     helloAt: number | null
     version: string | null
     protocolVersion: string | null
     serverOrigin: string | null
-    pairedInstanceId: string | null
+    browserAgentId: string | null
+    agents: BrowserRuntimeAgentStatus[]
+    recentEvents: BrowserRuntimeRecentEvent[]
   }
   conflicts: BrowserRuntimeConflict[]
   issues: BrowserStatusIssue[]

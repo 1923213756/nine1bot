@@ -206,6 +206,8 @@ function clientFromEntry(entry?: RuntimeControllerProtocol.Entry): Session.Clien
   const client: Session.Client = { source: entry.source }
   if (entry.mode) client.mode = entry.mode
   if (entry.platform) client.platform = entry.platform
+  if (entry.instanceId) client.instanceId = entry.instanceId
+  if (entry.browserAgentId) client.browserAgentId = entry.browserAgentId
   return client
 }
 

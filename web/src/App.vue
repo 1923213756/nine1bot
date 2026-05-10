@@ -9,7 +9,13 @@ import { useSessionMode } from './composables/useSessionMode'
 import { useProjects } from './composables/useProjects'
 import { useGlobalRecentSessions } from './composables/useGlobalRecentSessions'
 import { collectActivePageContext, type RequestPagePayload } from './api/page-context'
-import { api, type EventStreamSubscription, type GlobalSSEEventEnvelope, type Session } from './api/client'
+import {
+  api,
+  setBrowserExtensionBinding,
+  type EventStreamSubscription,
+  type GlobalSSEEventEnvelope,
+  type Session,
+} from './api/client'
 import Header from './components/Header.vue'
 import Sidebar from './components/Sidebar.vue'
 import ChatPanel from './components/ChatPanel.vue'
@@ -182,6 +188,10 @@ const extensionRelayStatus = ref({
   extensionUrl: '',
   serverReachable: true,
   relayConnected: true,
+  relayStatus: 'offline',
+  instanceId: '',
+  instanceLabel: '',
+  browserAgentId: '',
   message: '',
 })
 
@@ -241,6 +251,9 @@ const extensionConnectionIssue = computed(() =>
 
 const extensionConnectionText = computed(() => {
   if (!extensionRelayStatus.value.serverReachable) return '未连接到 Nine1Bot 主进程'
+  if (extensionRelayStatus.value.relayStatus === 'replaced') {
+    return '当前浏览器连接已被顶替，正在重新连接；已绑定会话会在同一 browserAgentId 恢复后继续可用'
+  }
   if (!extensionRelayStatus.value.relayConnected) return '浏览器 relay 正在重连，页面对话可继续，浏览器控制暂不可用'
   return ''
 })
@@ -261,6 +274,11 @@ let unregisterTerminalHandler: (() => void) | null = null
 let unregisterPreviewHandler: (() => void) | null = null
 let globalEventSource: EventStreamSubscription | null = null
 let projectsRefreshTimer: ReturnType<typeof setTimeout> | null = null
+const pendingExtensionRelayRequests = new Map<string, {
+  resolve: (value: unknown) => void
+  reject: (reason?: unknown) => void
+  timer: ReturnType<typeof setTimeout>
+}>()
 
 async function refreshGlobalRecentsIfAgent() {
   if (appMode.value !== 'agent') return
@@ -325,16 +343,78 @@ async function refreshExtensionPageContext() {
   }
 }
 
+function applyExtensionRelaySettings(settings?: {
+  origin?: string
+  bootstrapUrl?: string
+  extensionUrl?: string
+  serverReachable?: boolean
+  relayConnected?: boolean
+  relayStatus?: 'connecting' | 'connected' | 'reconnecting' | 'offline' | 'replaced'
+  instanceId?: string
+  instanceLabel?: string
+  browserAgentId?: string
+  message?: string
+}) {
+  if (!settings) return
+  extensionRelayStatus.value = {
+    origin: settings.origin || '',
+    bootstrapUrl: settings.bootstrapUrl || '',
+    extensionUrl: settings.extensionUrl || '',
+    serverReachable: settings.serverReachable !== false,
+    relayConnected: settings.relayConnected !== false,
+    relayStatus: settings.relayStatus || 'offline',
+    instanceId: settings.instanceId || '',
+    instanceLabel: settings.instanceLabel || '',
+    browserAgentId: settings.browserAgentId || '',
+    message: settings.message || '',
+  }
+  setBrowserExtensionBinding({
+    instanceId: settings.instanceId || undefined,
+    browserAgentId: settings.browserAgentId || undefined,
+  })
+}
+
+async function requestExtensionRelaySettings(timeoutMs = 1500) {
+  const parentContext = getTrustedExtensionParentContext()
+  if (!parentContext) return
+
+  const requestId = `relay-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  return await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingExtensionRelayRequests.delete(requestId)
+      reject(new Error('Timed out while requesting browser relay settings.'))
+    }, timeoutMs)
+
+    pendingExtensionRelayRequests.set(requestId, {
+      resolve: () => resolve(),
+      reject,
+      timer,
+    })
+
+    parentContext.parent.postMessage({
+      type: 'nine1bot.getBrowserRelaySettings',
+      requestId,
+    }, parentContext.origin)
+  }).catch((error) => {
+    console.warn('Failed to request browser relay settings:', error)
+  })
+}
+
 function handleExtensionParentMessage(event: MessageEvent) {
   if (!isBrowserExtension.value || !isTrustedExtensionParentEvent(event)) return
   const message = event.data as {
     type?: unknown
+    requestId?: string
     settings?: {
       origin?: string
       bootstrapUrl?: string
       extensionUrl?: string
       serverReachable?: boolean
       relayConnected?: boolean
+      relayStatus?: 'connecting' | 'connected' | 'reconnecting' | 'offline' | 'replaced'
+      instanceId?: string
+      instanceLabel?: string
+      browserAgentId?: string
       message?: string
     }
   } | undefined
@@ -342,14 +422,15 @@ function handleExtensionParentMessage(event: MessageEvent) {
     void refreshExtensionPageContext()
     return
   }
-  if (message?.type === 'nine1bot.relayStatus' && message.settings) {
-    extensionRelayStatus.value = {
-      origin: message.settings.origin || '',
-      bootstrapUrl: message.settings.bootstrapUrl || '',
-      extensionUrl: message.settings.extensionUrl || '',
-      serverReachable: message.settings.serverReachable !== false,
-      relayConnected: message.settings.relayConnected !== false,
-      message: message.settings.message || '',
+  if ((message?.type === 'nine1bot.relayStatus' || message?.type === 'nine1bot.browserRelaySettings') && message.settings) {
+    applyExtensionRelaySettings(message.settings)
+    if (typeof message.requestId === 'string') {
+      const pending = pendingExtensionRelayRequests.get(message.requestId)
+      if (pending) {
+        pendingExtensionRelayRequests.delete(message.requestId)
+        clearTimeout(pending.timer)
+        pending.resolve(undefined)
+      }
     }
   }
 }
@@ -434,6 +515,7 @@ onMounted(async () => {
 
   if (isBrowserExtension.value) {
     window.addEventListener('message', handleExtensionParentMessage)
+    await requestExtensionRelaySettings()
     await refreshExtensionPageContext()
     createSession('.')
   } else if (requestedSessionId && await selectSessionById(requestedSessionId)) {
@@ -458,6 +540,11 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('message', handleExtensionParentMessage)
+  for (const pending of pendingExtensionRelayRequests.values()) {
+    clearTimeout(pending.timer)
+    pending.reject(new Error('App unmounted'))
+  }
+  pendingExtensionRelayRequests.clear()
   unsubscribe()
   if (globalEventSource) {
     globalEventSource.close()

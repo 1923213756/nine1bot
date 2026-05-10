@@ -4,6 +4,7 @@ import {
   browserRelayOriginToBootstrapUrl,
   browserRelayOriginToExtensionUrl,
   buildWebUiUrl,
+  isAllowedServerOrigin,
   normalizeServerOrigin,
   relayUrlToServerOrigin,
   resolveStoredServerOrigin,
@@ -11,15 +12,26 @@ import {
 } from '../src/shared/server-config'
 
 describe('browser extension relay config', () => {
-  it('uses the default local server origin for empty or invalid input', () => {
+  it('uses the default server origin for empty, invalid, or public input', () => {
     expect(normalizeServerOrigin('')).toBe(DEFAULT_SERVER_ORIGIN)
     expect(normalizeServerOrigin('not a url')).toBe(DEFAULT_SERVER_ORIGIN)
     expect(normalizeServerOrigin('https://example.com:4096')).toBe(DEFAULT_SERVER_ORIGIN)
   })
 
-  it('normalizes localhost and 127.0.0.1 origins with custom ports', () => {
+  it('accepts loopback and intranet origins with custom ports', () => {
     expect(normalizeServerOrigin('http://127.0.0.1:4100/path?q=1')).toBe('http://127.0.0.1:4100')
     expect(normalizeServerOrigin('https://localhost:9443/browser/bootstrap')).toBe('https://localhost:9443')
+    expect(normalizeServerOrigin('http://192.168.1.10:4096')).toBe('http://192.168.1.10:4096')
+    expect(normalizeServerOrigin('http://nine1bot:4096')).toBe('http://nine1bot:4096')
+    expect(normalizeServerOrigin('http://relay.local:4096')).toBe('http://relay.local:4096')
+  })
+
+  it('rejects public ip and public domain origins', () => {
+    expect(isAllowedServerOrigin(new URL('http://10.0.0.8:4096'))).toBe(true)
+    expect(isAllowedServerOrigin(new URL('http://nine1bot:4096'))).toBe(true)
+    expect(isAllowedServerOrigin(new URL('http://relay.local:4096'))).toBe(true)
+    expect(isAllowedServerOrigin(new URL('https://example.com:4096'))).toBe(false)
+    expect(isAllowedServerOrigin(new URL('http://8.8.8.8:4096'))).toBe(false)
   })
 
   it('converts browser relay origins to extension WebSocket URLs', () => {

@@ -9,6 +9,7 @@ const BASE_URL = ''  // 使用相对路径，由 vite proxy 或同源处理
 export type ClientSurface = 'web' | 'browser-extension'
 
 let clientSurface: ClientSurface = 'web'
+let browserExtensionBinding: { instanceId?: string; browserAgentId?: string } = {}
 
 // 默认请求超时时间 (30秒)
 const DEFAULT_TIMEOUT = 30000
@@ -24,6 +25,14 @@ export function setApiClientSurface(surface: ClientSurface) {
 
 export function getApiClientSurface(): ClientSurface {
   return clientSurface
+}
+
+export function setBrowserExtensionBinding(binding?: { instanceId?: string; browserAgentId?: string }) {
+  browserExtensionBinding = {
+    instanceId: typeof binding?.instanceId === 'string' && binding.instanceId.trim() ? binding.instanceId : undefined,
+    browserAgentId:
+      typeof binding?.browserAgentId === 'string' && binding.browserAgentId.trim() ? binding.browserAgentId : undefined,
+  }
 }
 
 export function sessionMatchesClientSurface(session: Pick<Session, 'client'>, surface: ClientSurface = clientSurface): boolean {
@@ -92,11 +101,19 @@ function webClientCapabilities(page?: RequestPagePayload) {
 
 function controllerEntry(page?: RequestPagePayload) {
   if (clientSurface === 'browser-extension') {
-    const entry: { source: 'browser-extension'; platform?: string; mode: string } = {
+    const entry: {
+      source: 'browser-extension'
+      platform?: string
+      mode: string
+      instanceId?: string
+      browserAgentId?: string
+    } = {
       source: 'browser-extension',
       mode: 'browser-sidepanel',
     }
     if (page?.platform) entry.platform = page.platform
+    if (browserExtensionBinding.instanceId) entry.instanceId = browserExtensionBinding.instanceId
+    if (browserExtensionBinding.browserAgentId) entry.browserAgentId = browserExtensionBinding.browserAgentId
     return entry
   }
 
@@ -176,6 +193,8 @@ export interface SessionClient {
   source?: 'web' | 'browser-extension' | 'feishu' | 'api' | 'webhook' | 'schedule'
   mode?: string
   platform?: string
+  instanceId?: string
+  browserAgentId?: string
 }
 
 export interface SessionRuntimeSummary {

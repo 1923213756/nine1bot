@@ -74,6 +74,8 @@ export namespace RuntimeControllerProtocol {
       source: z.enum(["web", "feishu", "browser-extension", "api", "webhook", "schedule"]).optional(),
       platform: z.string().optional(),
       mode: z.string().optional(),
+      instanceId: z.string().optional(),
+      browserAgentId: z.string().optional(),
       templateIds: z.array(z.string()).optional(),
       traceId: z.string().optional(),
     })

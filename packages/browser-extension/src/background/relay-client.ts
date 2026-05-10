@@ -10,6 +10,7 @@
 
 import { toolExecutors } from '../tools'
 import {
+  BROWSER_AGENT_ID_STORAGE_KEY,
   DEFAULT_SERVER_ORIGIN,
   SERVER_ORIGIN_STORAGE_KEY,
   readStoredServerOrigin,
@@ -38,23 +39,68 @@ const AGENT_HEARTBEAT_INTERVAL = 1500
 const DEFAULT_TOOL_TIMEOUT_MS = 30000
 
 let configuredServerOrigin = DEFAULT_SERVER_ORIGIN
-let pairedInstanceId: string | null = null
+let currentInstanceId: string | null = null
+let currentInstanceLabel: string | null = null
+let browserAgentId: string | null = null
+let relayStatus: 'connecting' | 'connected' | 'reconnecting' | 'offline' | 'replaced' = 'offline'
+let lastDisconnectReason: string | null = null
 
-async function fetchBootstrap(serverOrigin: string): Promise<{ serverOrigin?: string; instanceId?: string } | null> {
+type BootstrapPayload = {
+  serverOrigin?: string
+  instanceId?: string
+  instanceLabel?: string
+  supportsIntranetRelay?: boolean
+}
+
+export interface RelayStatusSnapshot {
+  connected: boolean
+  status: 'connecting' | 'connected' | 'reconnecting' | 'offline' | 'replaced'
+  serverOrigin: string
+  instanceId: string | null
+  instanceLabel: string | null
+  browserAgentId: string | null
+  reconnectAttempt: number
+  lastDisconnectReason: string | null
+}
+
+async function fetchBootstrap(serverOrigin: string): Promise<BootstrapPayload | null> {
   try {
     const response = await fetch(`${serverOrigin}/browser/bootstrap`)
     if (!response.ok) return null
-    return await response.json() as { serverOrigin?: string; instanceId?: string }
+    return await response.json() as BootstrapPayload
   } catch {
     return null
   }
+}
+
+function createBrowserAgentId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+  return `agent_${Date.now().toString(36)}_${hex}`
+}
+
+async function ensureBrowserAgentId(): Promise<string> {
+  if (browserAgentId) return browserAgentId
+
+  const stored = await chrome.storage.local.get({ [BROWSER_AGENT_ID_STORAGE_KEY]: '' })
+  const existing = stored[BROWSER_AGENT_ID_STORAGE_KEY]
+  if (typeof existing === 'string' && existing.trim()) {
+    browserAgentId = existing
+    return browserAgentId
+  }
+
+  browserAgentId = createBrowserAgentId()
+  await chrome.storage.local.set({ [BROWSER_AGENT_ID_STORAGE_KEY]: browserAgentId }).catch(() => {})
+  return browserAgentId
 }
 
 async function getConfiguredRelayUrl(): Promise<string> {
   const storedServerOrigin = await readStoredServerOrigin().catch(() => DEFAULT_SERVER_ORIGIN)
   const bootstrap = await fetchBootstrap(storedServerOrigin)
   configuredServerOrigin = normalizeServerOrigin(bootstrap?.serverOrigin ?? storedServerOrigin)
-  pairedInstanceId = typeof bootstrap?.instanceId === 'string' ? bootstrap.instanceId : null
+  currentInstanceId = typeof bootstrap?.instanceId === 'string' ? bootstrap.instanceId : null
+  currentInstanceLabel = typeof bootstrap?.instanceLabel === 'string' ? bootstrap.instanceLabel : null
+  await ensureBrowserAgentId()
 
   try {
     await chrome.storage.sync.set({ [SERVER_ORIGIN_STORAGE_KEY]: configuredServerOrigin })
@@ -63,6 +109,11 @@ async function getConfiguredRelayUrl(): Promise<string> {
   }
 
   return serverOriginToRelayUrl(configuredServerOrigin)
+}
+
+function setRelayStatus(next: RelayStatusSnapshot['status'], reason: string | null = lastDisconnectReason): void {
+  relayStatus = next
+  lastDisconnectReason = reason
 }
 
 interface RunningCommand {
@@ -117,10 +168,18 @@ function sendToRelay(message: unknown): void {
 /**
  * 发送 CDP 事件到 Relay Server
  */
-function forwardCdpEvent(method: string, params?: unknown, sessionId?: string): void {
+async function forwardCdpEvent(method: string, params?: unknown, sessionId?: string): Promise<void> {
+  const agentId = await ensureBrowserAgentId()
   sendToRelay({
     method: 'forwardCDPEvent',
-    params: { method, params, sessionId },
+    params: {
+      instanceId: currentInstanceId,
+      browserAgentId: agentId,
+      method,
+      params,
+      sessionId,
+      emittedAt: Date.now(),
+    },
   })
 }
 
@@ -148,7 +207,7 @@ function detachManagedTarget(tabId: number, reason = 'target_detached'): void {
   const sessionId = activeSessions.get(tabId)
   if (!sessionId) return
 
-  forwardCdpEvent('Target.detachedFromTarget', {
+  void forwardCdpEvent('Target.detachedFromTarget', {
     sessionId,
     targetId: String(tabId),
   })
@@ -176,7 +235,7 @@ async function attachManagedTarget(tab: chrome.tabs.Tab): Promise<string | null>
   const sessionId = generateSessionId()
   activeSessions.set(tab.id, sessionId)
 
-  forwardCdpEvent('Target.attachedToTarget', {
+  await forwardCdpEvent('Target.attachedToTarget', {
     sessionId,
     targetInfo: targetInfoForTab(tab),
     waitingForDebugger: false,
@@ -185,14 +244,17 @@ async function attachManagedTarget(tab: chrome.tabs.Tab): Promise<string | null>
   return sessionId
 }
 
-function sendExtensionHello(): void {
+async function sendExtensionHello(): Promise<void> {
+  const agentId = await ensureBrowserAgentId()
   sendToRelay({
     method: 'extension.hello',
     params: {
-      version: chrome.runtime.getManifest().version,
+      instanceId: currentInstanceId,
+      browserAgentId: agentId,
+      extensionVersion: chrome.runtime.getManifest().version,
       protocolVersion: EXTENSION_PROTOCOL_VERSION,
       serverOrigin: configuredServerOrigin,
-      pairedInstanceId,
+      connectedAt: Date.now(),
       tools: Object.keys(toolExecutors),
       capabilities: {
         cancelCDPCommand: true,
@@ -203,14 +265,19 @@ function sendExtensionHello(): void {
   })
 }
 
-function sendExtensionHealth(): void {
+async function sendExtensionHealth(): Promise<void> {
+  const agentId = await ensureBrowserAgentId()
   sendToRelay({
     method: 'extension.health',
     params: {
+      instanceId: currentInstanceId,
+      browserAgentId: agentId,
       timestamp: Date.now(),
       lastPongAt,
       activeCommands: runningCommands.size,
       reconnectAttempt,
+      activeTabCount: activeSessions.size,
+      attachedTabCount: attachedTabs.size,
     },
   })
 }
@@ -246,9 +313,12 @@ async function sendAgentStateToTabs(tabId: number, taskLabel?: string): Promise<
 
   await Promise.all(sendPromises)
 
+  const agentId = await ensureBrowserAgentId()
   sendToRelay({
     method: 'extension.agentState',
     params: {
+      instanceId: currentInstanceId,
+      browserAgentId: agentId,
       tabId,
       state,
       heartbeatAt: now,
@@ -293,7 +363,7 @@ function startHealthReporting(): void {
   if (healthTimer) return
   healthTimer = setInterval(() => {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      sendExtensionHealth()
+      void sendExtensionHealth()
     }
   }, HEALTH_REPORT_INTERVAL)
 }
@@ -722,7 +792,7 @@ function setupTabListeners(): void {
         await attachManagedTarget(tab).catch(() => {})
         return
       }
-      forwardCdpEvent('Target.targetInfoChanged', {
+      void forwardCdpEvent('Target.targetInfoChanged', {
         targetInfo: targetInfoForTab(tab),
       })
     }
@@ -804,7 +874,8 @@ function setupServerConfigListener(): void {
     console.log('[Relay Client] Server origin changed, reconnecting to:', nextOrigin)
     disconnectFromRelay()
     configuredServerOrigin = nextOrigin
-    pairedInstanceId = null
+    currentInstanceId = null
+    currentInstanceLabel = null
     connectToRelay()
   })
 }
@@ -830,6 +901,7 @@ export function connectToRelay(url?: string): void {
 
   isConnecting = true
   intentionalDisconnect = false
+  setRelayStatus(reconnectAttempt > 0 ? 'reconnecting' : 'connecting')
   console.log('[Relay Client] Connecting to:', url)
 
   try {
@@ -840,25 +912,29 @@ export function connectToRelay(url?: string): void {
       isConnecting = false
       reconnectAttempt = 0
       lastPongAt = Date.now()
+      setRelayStatus('connected', null)
 
       if (reconnectTimer) {
         clearTimeout(reconnectTimer)
         reconnectTimer = null
       }
 
-      sendExtensionHello()
-      sendExtensionHealth()
+      void sendExtensionHello()
+      void sendExtensionHealth()
       startHealthReporting()
       startAgentHeartbeat()
-      sendInitialTargets()
+      void sendInitialTargets()
     }
 
     ws.onmessage = (event) => {
       handleRelayMessage(event.data)
     }
 
-    ws.onclose = () => {
-      console.log('[Relay Client] Disconnected from Relay Server')
+    ws.onclose = (event) => {
+      const reason = event.reason || null
+      const replaced = reason === 'replaced'
+      console.log('[Relay Client] Disconnected from Relay Server', { code: event.code, reason })
+      setRelayStatus(replaced ? 'replaced' : 'offline', reason)
       cleanup()
       if (!intentionalDisconnect) {
         scheduleReconnect(url)
@@ -868,10 +944,14 @@ export function connectToRelay(url?: string): void {
     ws.onerror = (error) => {
       console.error('[Relay Client] WebSocket error:', error)
       isConnecting = false
+      if (!intentionalDisconnect) {
+        setRelayStatus('offline', 'socket_error')
+      }
     }
   } catch (error) {
     console.error('[Relay Client] Failed to connect:', error)
     isConnecting = false
+    setRelayStatus('offline', 'connect_failed')
     scheduleReconnect(url)
   }
 }
@@ -895,6 +975,7 @@ function cleanup(): void {
     runningCommands.delete(commandId)
   }
   tabActiveCommandCount.clear()
+  attachedTabs.clear()
 }
 
 /**
@@ -904,6 +985,7 @@ function scheduleReconnect(url: string): void {
   if (reconnectTimer) return
 
   reconnectAttempt += 1
+  setRelayStatus(lastDisconnectReason === 'replaced' ? 'replaced' : 'reconnecting', lastDisconnectReason)
   const base = Math.min(RECONNECT_BASE_INTERVAL * 2 ** Math.max(0, reconnectAttempt - 1), RECONNECT_MAX_INTERVAL)
   const jitter = Math.floor(Math.random() * 1000)
   const delay = base + jitter
@@ -921,6 +1003,7 @@ function scheduleReconnect(url: string): void {
  */
 export function disconnectFromRelay(): void {
   intentionalDisconnect = true
+  setRelayStatus('offline', 'intentional_disconnect')
 
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
@@ -940,6 +1023,19 @@ export function disconnectFromRelay(): void {
  */
 export function isRelayConnected(): boolean {
   return ws !== null && ws.readyState === WebSocket.OPEN
+}
+
+export function getRelayStatusSnapshot(): RelayStatusSnapshot {
+  return {
+    connected: isRelayConnected(),
+    status: relayStatus,
+    serverOrigin: configuredServerOrigin,
+    instanceId: currentInstanceId,
+    instanceLabel: currentInstanceLabel,
+    browserAgentId,
+    reconnectAttempt,
+    lastDisconnectReason,
+  }
 }
 
 /**

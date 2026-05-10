@@ -49,6 +49,8 @@ export namespace Session {
     source: z.enum(["web", "browser-extension", "feishu", "api", "webhook", "schedule"]).optional(),
     mode: z.string().optional(),
     platform: z.string().optional(),
+    instanceId: z.string().optional(),
+    browserAgentId: z.string().optional(),
   })
   export type Client = z.output<typeof Client>
 

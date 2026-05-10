@@ -4,7 +4,7 @@ import {
   browserRelayOriginToBootstrapUrl,
   browserRelayOriginToExtensionUrl,
   buildWebUiUrl,
-  isAllowedLocalServerOrigin,
+  isAllowedServerOrigin,
   normalizeServerOrigin,
   readStoredServerOrigin,
   writeStoredServerOrigin,
@@ -16,10 +16,25 @@ let currentServerOrigin = ''
 let currentOpenNonce = ''
 let serverReachable = false
 let relayConnected = false
+let relayStatus: 'connecting' | 'connected' | 'reconnecting' | 'offline' | 'replaced' = 'offline'
+let currentInstanceId = ''
+let currentInstanceLabel = ''
+let currentBrowserAgentId = ''
 let settingsOpen = false
 let activeSettingsTab = 'relay'
 let healthTimer: ReturnType<typeof setInterval> | null = null
 let pageChangeTimer: ReturnType<typeof setTimeout> | null = null
+
+type RelayHealthSnapshot = {
+  connected?: boolean
+  status?: 'connecting' | 'connected' | 'reconnecting' | 'offline' | 'replaced'
+  serverOrigin?: string
+  instanceId?: string | null
+  instanceLabel?: string | null
+  browserAgentId?: string | null
+  reconnectAttempt?: number
+  lastDisconnectReason?: string | null
+}
 
 function qs<T extends HTMLElement>(id: string): T | null {
   return document.getElementById(id) as T | null
@@ -32,12 +47,12 @@ function createNonce(): string {
 function parseRelayOriginInput(input: string): { ok: true; origin: string } | { ok: false; message: string } {
   try {
     const parsed = new URL(input.trim())
-    if (!isAllowedLocalServerOrigin(parsed)) {
-      return { ok: false, message: '请使用 http(s)://127.0.0.1:<port> 或 http(s)://localhost:<port>。' }
+    if (!isAllowedServerOrigin(parsed)) {
+      return { ok: false, message: '请使用本地或内网 Browser relay origin，例如 http://127.0.0.1:4096 或 http://192.168.1.10:4096。' }
     }
     return { ok: true, origin: `${parsed.protocol}//${parsed.host}` }
   } catch {
-    return { ok: false, message: '请输入有效的本地 Browser relay origin，例如 http://127.0.0.1:4096。' }
+    return { ok: false, message: '请输入有效的本地或内网 Browser relay origin，例如 http://127.0.0.1:4096。' }
   }
 }
 
@@ -55,7 +70,11 @@ async function readOpenNonce(): Promise<string> {
   return nonce
 }
 
-async function fetchBootstrap(origin: string, timeoutMs = 3000): Promise<{ instanceId?: string; serverOrigin?: string }> {
+async function fetchBootstrap(origin: string, timeoutMs = 3000): Promise<{
+  instanceId?: string
+  instanceLabel?: string
+  serverOrigin?: string
+}> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -67,7 +86,7 @@ async function fetchBootstrap(origin: string, timeoutMs = 3000): Promise<{ insta
       const message = typeof body?.error === 'string' ? body.error : `HTTP ${response.status}`
       throw new Error(message)
     }
-    return body as { instanceId?: string; serverOrigin?: string }
+    return body as { instanceId?: string; instanceLabel?: string; serverOrigin?: string }
   } finally {
     clearTimeout(timer)
   }
@@ -84,12 +103,11 @@ async function testRelayOrigin(origin: string): Promise<{ ok: true; message: str
   }
 }
 
-async function checkExtensionHealth(): Promise<boolean> {
+async function checkExtensionHealth(): Promise<RelayHealthSnapshot> {
   try {
-    const response = await chrome.runtime.sendMessage({ type: 'nine1bot-sidepanel-health-check' })
-    return Boolean(response?.connected)
+    return await chrome.runtime.sendMessage({ type: 'nine1bot-sidepanel-health-check' }) as RelayHealthSnapshot
   } catch {
-    return false
+    return { connected: false, status: 'offline' }
   }
 }
 
@@ -100,6 +118,10 @@ function relaySettingsPayload(message = '') {
     extensionUrl: browserRelayOriginToExtensionUrl(currentServerOrigin),
     serverReachable,
     relayConnected,
+    relayStatus,
+    instanceId: currentInstanceId || undefined,
+    instanceLabel: currentInstanceLabel || undefined,
+    browserAgentId: currentBrowserAgentId || undefined,
     message,
   }
 }
@@ -125,7 +147,9 @@ function setStatus(): void {
 
   if (!serverReachable) {
     status.textContent = '未连接到 Nine1Bot 主进程'
-  } else if (!relayConnected) {
+  } else if (relayStatus === 'replaced') {
+    status.textContent = '当前浏览器连接已被顶替，正在重新建立 relay'
+  } else if (!relayConnected || relayStatus === 'reconnecting' || relayStatus === 'connecting') {
     status.textContent = 'Nine1Bot 可访问，浏览器 relay 正在重连'
   } else {
     status.textContent = '浏览器 relay 已连接'
@@ -191,7 +215,12 @@ async function refreshConnection(options: { mount?: boolean } = {}): Promise<voi
   setRelayFormValue(currentServerOrigin)
   const result = await testRelayOrigin(currentServerOrigin)
   serverReachable = result.ok
-  relayConnected = await checkExtensionHealth()
+  const health = await checkExtensionHealth()
+  relayConnected = Boolean(health.connected)
+  relayStatus = health.status ?? (relayConnected ? 'connected' : 'offline')
+  currentInstanceId = typeof health.instanceId === 'string' ? health.instanceId : (result.ok ? result.instanceId ?? '' : '')
+  currentInstanceLabel = typeof health.instanceLabel === 'string' ? health.instanceLabel : ''
+  currentBrowserAgentId = typeof health.browserAgentId === 'string' ? health.browserAgentId : ''
   setStatus()
   renderPanels()
 

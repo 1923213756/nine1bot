@@ -9,7 +9,7 @@ import type { Hono } from "hono"
 
 export type BridgeServer = {
   getRoutes(): Hono
-  getStatus(): Promise<any>
+  getStatus(...args: any[]): Promise<any>
   launchBotBrowser(options?: any): Promise<any>
   snapshot(...args: any[]): Promise<any>
   screenshot(...args: any[]): Promise<any>
