@@ -7,6 +7,7 @@ import { agentTerminalApi } from '../api/client'
 
 const props = defineProps<{
   terminalId: string  // 终端 ID，用于调用 API
+  sessionId: string
   screen: string
   screenAnsi: string
   cursor?: { row: number; col: number }
@@ -15,6 +16,8 @@ const props = defineProps<{
   status?: 'running' | 'exited'  // 终端状态
   /** 原始输出增量数据 - 用于保持滚动历史 */
   outputData?: string
+  outputSeq?: number
+  outputResetToken?: number
 }>()
 
 const emit = defineEmits<{
@@ -33,6 +36,8 @@ let currentBackendRows = props.rows || 24
 let currentBackendCols = props.cols || 120
 // 标记是否已初始化（已加载历史缓冲）
 let isInitialized = false
+let lastAppliedSeq = 0
+const pendingOutput: Array<{ seq?: number; data: string; resetToken?: number }> = []
 
 onMounted(async () => {
   if (!terminalRef.value) return
@@ -96,16 +101,19 @@ onMounted(async () => {
 
   // 从后端加载完整的历史缓冲区
   try {
-    const { buffer } = await agentTerminalApi.getBuffer(props.terminalId)
+    const { buffer, latestSeq } = await agentTerminalApi.getBuffer(props.terminalId, props.sessionId)
     if (buffer && terminal) {
       terminal.write(buffer)
     }
+    lastAppliedSeq = latestSeq
     isInitialized = true
+    flushPendingOutput()
   } catch (e) {
     console.warn('Failed to load terminal buffer, falling back to screen:', e)
     // 回退到屏幕内容
     updateScreen(props.screenAnsi)
     isInitialized = true
+    flushPendingOutput()
   }
 
   // 适应容器大小并设置 ResizeObserver
@@ -130,7 +138,7 @@ onUnmounted(() => {
 // 发送用户输入到后端
 async function sendInput(data: string) {
   try {
-    await agentTerminalApi.write(props.terminalId, data)
+    await agentTerminalApi.write(props.terminalId, data, props.sessionId)
   } catch (error) {
     console.error('Failed to send input to terminal:', error)
   }
@@ -166,7 +174,7 @@ async function fitAndSync() {
   // 如果尺寸有变化，通知后端调整
   if (newRows !== currentBackendRows || newCols !== currentBackendCols) {
     try {
-      await agentTerminalApi.resize(props.terminalId, newRows, newCols)
+      await agentTerminalApi.resize(props.terminalId, newRows, newCols, props.sessionId)
       currentBackendRows = newRows
       currentBackendCols = newCols
       emit('resize', newRows, newCols)
@@ -177,10 +185,14 @@ async function fitAndSync() {
 }
 
 // 监听原始输出增量数据
-watch(() => props.outputData, (newData) => {
-  if (!terminal || !isInitialized || !newData) return
-  // 直接追加新数据，保持滚动历史
-  terminal.write(newData)
+watch([() => props.outputSeq, () => props.outputResetToken, () => props.outputData], ([seq, resetToken, data]) => {
+  if (data === undefined && !resetToken && seq === undefined) return
+  const item = { seq, data: data || '', resetToken }
+  if (!terminal || !isInitialized) {
+    pendingOutput.push(item)
+    return
+  }
+  applyOutput(item)
 })
 
 // 监听屏幕内容变化（仅在没有 outputData 时作为回退）
@@ -233,6 +245,48 @@ function updateScreen(screen: string) {
   if (props.cursor) {
     terminal.write(`\x1b[${props.cursor.row + 1};${props.cursor.col + 1}H`)
   }
+}
+
+function applyScreenSnapshot(screen: string) {
+  if (!terminal || !screen) return
+
+  terminal.write('\x1b[H\x1b[2J')
+  const lines = screen.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    terminal.write(lines[i])
+    if (i < lines.length - 1) {
+      terminal.write('\r\n')
+    }
+  }
+
+  if (props.cursor) {
+    terminal.write(`\x1b[${props.cursor.row + 1};${props.cursor.col + 1}H`)
+  }
+}
+
+function flushPendingOutput() {
+  while (pendingOutput.length > 0) {
+    applyOutput(pendingOutput.shift()!)
+  }
+}
+
+function applyOutput(item: { seq?: number; data: string; resetToken?: number }) {
+  if (!terminal) return
+
+  if (item.resetToken) {
+    terminal.clear()
+    terminal.reset()
+    if (item.data) terminal.write(item.data)
+    applyScreenSnapshot(props.screenAnsi)
+    lastAppliedSeq = item.seq ?? lastAppliedSeq
+    return
+  }
+
+  if (item.seq !== undefined) {
+    if (item.seq <= lastAppliedSeq) return
+    lastAppliedSeq = item.seq
+  }
+  if (item.data) terminal.write(item.data)
 }
 
 // 聚焦终端

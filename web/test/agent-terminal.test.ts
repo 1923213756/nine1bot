@@ -1,0 +1,261 @@
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
+import { useAgentTerminal } from '../src/composables/useAgentTerminal'
+
+const originalFetch = globalThis.fetch
+const mockState = {
+  agtBChunks: [] as Array<{ seq: number; data: string }>,
+  pauseAAfterSeq1: false,
+  resumeAAfterSeq1: undefined as (() => void) | undefined,
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+function installFetchMock() {
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+    const parsed = new URL(url, 'http://localhost')
+
+    if (parsed.pathname === '/agent-terminal' && parsed.searchParams.get('sessionID') === 'ses_a') {
+      return jsonResponse([
+        {
+          id: 'agt_a',
+          name: 'A',
+          sessionID: 'ses_a',
+          status: 'running',
+          rows: 24,
+          cols: 80,
+          createdAt: 1,
+          lastActivity: 1,
+        },
+      ])
+    }
+
+    if (parsed.pathname === '/agent-terminal' && parsed.searchParams.get('sessionID') === 'ses_b') {
+      return jsonResponse([
+        {
+          id: 'agt_b',
+          name: 'B',
+          sessionID: 'ses_b',
+          status: 'running',
+          rows: 24,
+          cols: 80,
+          createdAt: 1,
+          lastActivity: 1,
+        },
+      ])
+    }
+
+    if (parsed.pathname === '/agent-terminal/agt_a/screen') {
+      return jsonResponse({
+        sessionID: 'ses_a',
+        screen: 'ready',
+        screenAnsi: 'ready',
+        cursor: { row: 0, col: 5 },
+      })
+    }
+
+    if (parsed.pathname === '/agent-terminal/agt_b/screen') {
+      return jsonResponse({
+        sessionID: 'ses_b',
+        screen: 'b ready',
+        screenAnsi: 'b ready',
+        cursor: { row: 0, col: 7 },
+      })
+    }
+
+    if (parsed.pathname === '/agent-terminal/agt_a/buffer' && parsed.searchParams.get('afterSeq') === '1') {
+      if (mockState.pauseAAfterSeq1) {
+        await new Promise<void>((resolve) => {
+          mockState.resumeAAfterSeq1 = resolve
+        })
+      }
+      return jsonResponse({
+        buffer: '',
+        chunks: [
+          { seq: 2, data: 'two' },
+          { seq: 3, data: 'three' },
+        ],
+        latestSeq: 3,
+        firstSeq: 1,
+        reset: false,
+      })
+    }
+
+    if (parsed.pathname === '/agent-terminal/agt_a/buffer' && parsed.searchParams.get('afterSeq') === '0') {
+      return jsonResponse({
+        buffer: '',
+        chunks: [],
+        latestSeq: 0,
+        firstSeq: 1,
+        reset: false,
+      })
+    }
+
+    if (parsed.pathname === '/agent-terminal/agt_b/buffer' && parsed.searchParams.get('afterSeq') === '0') {
+      return jsonResponse({
+        buffer: '',
+        chunks: mockState.agtBChunks,
+        latestSeq: mockState.agtBChunks.at(-1)?.seq ?? 0,
+        firstSeq: 1,
+        reset: false,
+      })
+    }
+
+    return jsonResponse({ buffer: 'trimmed-tail', chunks: [], latestSeq: 0, firstSeq: 1, reset: true })
+  }) as typeof fetch
+}
+
+async function settle() {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+beforeEach(() => {
+  useAgentTerminal().clearTerminals()
+  mockState.agtBChunks = []
+  mockState.pauseAAfterSeq1 = false
+  mockState.resumeAAfterSeq1 = undefined
+  installFetchMock()
+})
+
+afterEach(() => {
+  useAgentTerminal().clearTerminals()
+  globalThis.fetch = originalFetch
+})
+
+describe('useAgentTerminal', () => {
+  it('filters terminals by current session and ignores other session output', async () => {
+    const terminal = useAgentTerminal()
+    terminal.setSessionContext('ses_a')
+    await settle()
+
+    expect(terminal.terminals.value.map((item) => item.id)).toEqual(['agt_a'])
+    expect(terminal.activeTerminalId.value).toBe('agt_a')
+
+    terminal.handleSSEEvent({
+      type: 'agent-terminal.created',
+      properties: {
+        info: {
+          id: 'agt_b',
+          name: 'B',
+          sessionID: 'ses_b',
+          status: 'running',
+          rows: 24,
+          cols: 80,
+          createdAt: 1,
+          lastActivity: 1,
+        },
+      },
+    })
+    terminal.handleSSEEvent({
+      type: 'agent-terminal.output',
+      properties: { id: 'agt_b', sessionID: 'ses_b', seq: 1, data: 'wrong' },
+    })
+
+    expect(terminal.terminals.value.map((item) => item.id)).toEqual(['agt_a'])
+    expect(terminal.activeScreen.value?.outputData).toBeUndefined()
+  })
+
+  it('refreshes a previously initialized session when switching back after hidden output', async () => {
+    const terminal = useAgentTerminal()
+    terminal.setSessionContext('ses_b')
+    await settle()
+
+    expect(terminal.activeTerminalId.value).toBe('agt_b')
+    expect(terminal.activeScreen.value?.latestSeq).toBe(0)
+
+    terminal.setSessionContext('ses_a')
+    await settle()
+    mockState.agtBChunks = [{ seq: 1, data: 'hidden' }]
+
+    terminal.handleSSEEvent({
+      type: 'agent-terminal.output',
+      properties: { id: 'agt_b', sessionID: 'ses_b', seq: 1, data: 'hidden' },
+    })
+    expect(terminal.activeTerminalId.value).toBe('agt_a')
+
+    terminal.setSessionContext('ses_b')
+    await settle()
+
+    expect(terminal.activeTerminalId.value).toBe('agt_b')
+    expect(terminal.activeScreen.value?.outputData).toBe('hidden')
+    expect(terminal.activeScreen.value?.latestSeq).toBe(1)
+  })
+
+  it('deduplicates output seqs and recovers gaps from the ring buffer', async () => {
+    const terminal = useAgentTerminal()
+    terminal.setSessionContext('ses_a')
+    await settle()
+
+    terminal.handleSSEEvent({
+      type: 'agent-terminal.output',
+      properties: { id: 'agt_a', sessionID: 'ses_a', seq: 1, data: 'one' },
+    })
+    terminal.handleSSEEvent({
+      type: 'agent-terminal.output',
+      properties: { id: 'agt_a', sessionID: 'ses_a', seq: 1, data: 'duplicate' },
+    })
+
+    expect(terminal.activeScreen.value?.outputData).toBe('one')
+    expect(terminal.activeScreen.value?.latestSeq).toBe(1)
+
+    terminal.handleSSEEvent({
+      type: 'agent-terminal.output',
+      properties: { id: 'agt_a', sessionID: 'ses_a', seq: 3, data: 'three' },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(terminal.activeScreen.value?.outputData).toBe('twothree')
+    expect(terminal.activeScreen.value?.latestSeq).toBe(3)
+  })
+
+  it('does not replay recovery chunks that arrived live while recovery was in flight', async () => {
+    const terminal = useAgentTerminal()
+    terminal.setSessionContext('ses_a')
+    await settle()
+
+    terminal.handleSSEEvent({
+      type: 'agent-terminal.output',
+      properties: { id: 'agt_a', sessionID: 'ses_a', seq: 1, data: 'one' },
+    })
+
+    mockState.pauseAAfterSeq1 = true
+    const recovery = terminal.recoverTerminalOutput('agt_a', 1)
+    await settle()
+
+    terminal.handleSSEEvent({
+      type: 'agent-terminal.output',
+      properties: { id: 'agt_a', sessionID: 'ses_a', seq: 2, data: 'two-live' },
+    })
+    mockState.resumeAAfterSeq1?.()
+    await recovery
+
+    expect(terminal.activeScreen.value?.outputData).toBe('three')
+    expect(terminal.activeScreen.value?.latestSeq).toBe(3)
+  })
+
+  it('keeps retained buffer data for reset recovery and clears reset token on later output', async () => {
+    const terminal = useAgentTerminal()
+    terminal.setSessionContext('ses_a')
+    await settle()
+
+    await terminal.recoverTerminalOutput('agt_a', -1)
+
+    expect(terminal.activeScreen.value?.screenAnsi).toBe('ready')
+    expect(terminal.activeScreen.value?.outputData).toBe('trimmed-tail')
+    expect(terminal.activeScreen.value?.outputResetToken).toBeGreaterThan(0)
+
+    terminal.handleSSEEvent({
+      type: 'agent-terminal.output',
+      properties: { id: 'agt_a', sessionID: 'ses_a', seq: 1, data: 'after-reset' },
+    })
+
+    expect(terminal.activeScreen.value?.outputData).toBe('after-reset')
+    expect(terminal.activeScreen.value?.outputResetToken).toBeUndefined()
+  })
+})

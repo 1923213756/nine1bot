@@ -35,7 +35,7 @@ Examples:
   }),
 
   async execute(params, ctx) {
-    const info = AgentTerminal.get(params.id)
+    const info = AgentTerminal.get(params.id, ctx.sessionID)
     if (!info) {
       throw new Error(`Terminal session not found: ${params.id}`)
     }
@@ -52,10 +52,11 @@ Examples:
       },
     })
 
-    const result = await AgentTerminal.waitFor(params.id, params.pattern, timeout)
+    const result = await AgentTerminal.waitFor(params.id, params.pattern, timeout, ctx.sessionID)
 
-    const screenInfo = AgentTerminal.getScreenInfo(params.id)
-    const width = Math.min(screenInfo?.cols || 80, 80)
+    const snapshot = await AgentTerminal.getScreenSnapshot(params.id, ctx.sessionID)
+    const width = Math.min(snapshot?.info.cols || 80, 80)
+    const screen = snapshot?.screen || result.screen || ""
 
     if (result.matched) {
       return {
@@ -64,7 +65,7 @@ Examples:
 
 Current screen:
 ${"─".repeat(width)}
-${result.screen || ""}
+${screen}
 ${"─".repeat(width)}`,
         metadata: {
           terminalId: params.id,
@@ -80,7 +81,7 @@ ${"─".repeat(width)}`,
 
 Current screen:
 ${"─".repeat(width)}
-${result.screen || ""}
+${screen}
 ${"─".repeat(width)}
 
 The pattern was not found. You can:

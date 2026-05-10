@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import { CheckCircle2, CircleAlert, CircleSlash, Play, RefreshCw, Save, Trash2 } from 'lucide-vue-next'
+import { CheckCircle2, CircleAlert, CircleSlash, Copy, Play, RefreshCw, Save, Trash2 } from 'lucide-vue-next'
+import { gitLabReviewApi, platformApi, webhookApi, type GitLabReviewRun, type WebhookStatus } from '../api/client'
 import type {
   PlatformActionDescriptor,
   PlatformConfigField,
   PlatformDetail,
   PlatformSummary,
   PlatformActionResult,
+  Provider,
 } from '../api/client'
 
 const props = defineProps<{
@@ -18,6 +20,7 @@ const props = defineProps<{
   actionRunning: string
   error: string
   actionResult: PlatformActionResult | null
+  providers: Provider[]
 }>()
 
 const emit = defineEmits<{
@@ -31,19 +34,160 @@ const enabledDraft = ref(true)
 const formValues = reactive<Record<string, string | number | boolean>>({})
 const secretClears = reactive<Record<string, boolean>>({})
 const jsonErrors = reactive<Record<string, string>>({})
+const gitLabReviewRuns = ref<GitLabReviewRun[]>([])
+const webhookStatus = ref<WebhookStatus | null>(null)
+const loadingGitLabRuns = ref(false)
+const gitLabRunsError = ref('')
+const gitLabWebhookUrlMessage = ref('')
+const gitLabProjectSearchQuery = ref('')
+const gitLabProjectSearchResults = ref<GitLabProjectRef[]>([])
+const gitLabProjectSearchError = ref('')
+const searchingGitLabProjects = ref(false)
+const gitLabGroupSearchQuery = ref('')
+const gitLabGroupSearchResults = ref<GitLabGroupRef[]>([])
+const gitLabGroupSearchError = ref('')
+const searchingGitLabGroups = ref(false)
+const gitLabAdvancedConfig = ref(false)
+const retryingGitLabRunIds = ref<Set<string>>(new Set())
 const actionFormValues = reactive<Record<string, Record<string, string | number | boolean>>>({})
 const actionJsonErrors = reactive<Record<string, Record<string, string>>>({})
 
 const configFields = computed(() => {
   return props.selectedPlatform?.config?.sections.flatMap((section) => section.fields) ?? []
 })
+const configFormSections = computed(() => {
+  if (!isGitLabPlatform.value) return props.selectedPlatform?.config?.sections ?? []
+  const fieldsByKey = new Map(configFields.value.map((field) => [field.key, field]))
+  const usedKeys = new Set<string>()
+  const groups = [
+    {
+      id: 'gitlab-connection',
+      title: '连接与密钥',
+      description: '配置 GitLab 实例地址、API token 和专用 webhook secret。',
+      keys: ['review.baseUrl', 'review.tokenSecretRef', 'review.webhookSecretRef'],
+    },
+    {
+      id: 'gitlab-trigger',
+      title: '触发入口',
+      description: '配置评论触发词、自动审查开关和允许触发 review 的项目范围。',
+      keys: ['review.botMention', 'review.webhookAutoReview', 'review.scopeMode', 'review.includedProjects', 'review.excludedProjects', 'review.hookGroups'],
+    },
+    {
+      id: 'gitlab-review-policy',
+      title: '审查策略',
+      description: '控制是否启用 review、发布方式、行内评论和专用模型。',
+      keys: ['review.enabled', 'review.dryRun', 'review.inlineComments', 'review.modelProviderId', 'review.modelId'],
+    },
+    {
+      id: 'gitlab-page-context',
+      title: '页面上下文',
+      description: '控制浏览器插件采集 GitLab 页面上下文时允许的实例和补充信息。',
+      keys: ['allowedHosts', 'apiEnrichment'],
+    },
+  ].map((group) => {
+    const fields = group.keys
+      .map((key) => fieldsByKey.get(key))
+      .filter((field): field is PlatformConfigField => Boolean(field))
+    fields.forEach((field) => usedKeys.add(field.key))
+    return {
+      id: group.id,
+      title: group.title,
+      description: group.description,
+      fields,
+    }
+  }).filter((group) => group.fields.length > 0)
+
+  const otherFields = configFields.value.filter((field) => !usedKeys.has(field.key))
+  if (otherFields.length > 0) {
+    groups.push({
+      id: 'gitlab-other',
+      title: '其他配置',
+      description: '平台插件暴露的其他高级配置。',
+      fields: otherFields,
+    })
+  }
+  return groups
+})
+const gitLabFieldMap = computed(() => new Map(configFields.value.map((field) => [field.key, field])))
+const gitLabMvpFields = computed(() => [
+  'review.baseUrl',
+  'review.webhookSecretRef',
+  'review.tokenSecretRef',
+  'review.enabled',
+  'review.dryRun',
+  'review.modelId',
+].map((key) => gitLabFieldMap.value.get(key)).filter((field): field is PlatformConfigField => Boolean(field)))
 const operationLocked = computed(() => props.saving || Boolean(props.actionRunning))
 const healthRefreshing = computed(() => props.actionRunning === 'health')
+const isGitLabPlatform = computed(() => props.selectedPlatform?.id === 'gitlab')
+const visibleGitLabRuns = computed(() => gitLabReviewRuns.value.filter((run) => run.status !== 'rejected').slice(0, 8))
+const visibleGitLabIgnoredEvents = computed(() => gitLabReviewRuns.value.filter((run) => run.status === 'rejected').slice(0, 8))
+const gitLabWebhookPath = '/webhooks/gitlab/{webhookSecret}'
+const gitLabWebhookSecretFieldKey = 'review.webhookSecretRef'
+const gitLabReviewModelProviderFieldKey = 'review.modelProviderId'
+const gitLabReviewModelFieldKey = 'review.modelId'
+const gitLabMvpFieldKeys = new Set([
+  'review.baseUrl',
+  'review.webhookSecretRef',
+  'review.tokenSecretRef',
+  'review.enabled',
+  'review.dryRun',
+  'review.modelProviderId',
+  'review.modelId',
+])
+const gitLabIncludedProjectsFieldKey = 'review.includedProjects'
+const gitLabExcludedProjectsFieldKey = 'review.excludedProjects'
+const gitLabScopeModeFieldKey = 'review.scopeMode'
+const gitLabHookGroupsFieldKey = 'review.hookGroups'
+type GitLabProjectRef = {
+  id: string | number
+  pathWithNamespace?: string
+  webUrl?: string
+}
+type GitLabGroupRef = {
+  id: string | number
+  fullPath?: string
+  webUrl?: string
+}
+const authenticatedModelCount = computed(() => {
+  return props.providers.filter((provider) => provider.authenticated).reduce((total, provider) => total + provider.models.length, 0)
+})
+const gitLabIncludedProjects = computed(() => parseGitLabProjectRefs(textValue(gitLabIncludedProjectsFieldKey)))
+const gitLabExcludedProjects = computed(() => parseGitLabProjectRefs(textValue(gitLabExcludedProjectsFieldKey)))
+const gitLabHookGroups = computed(() => parseGitLabGroupRefs(textValue(gitLabHookGroupsFieldKey)))
+const gitLabScopeMode = computed(() => textValue(gitLabScopeModeFieldKey) || 'all-received')
+const gitLabRuntimeWebhookUrl = computed(() => {
+  const actionWebhookUrl = props.actionResult?.data?.webhookUrl
+  if (typeof actionWebhookUrl === 'string' && actionWebhookUrl.startsWith('http')) return actionWebhookUrl
+  const cardValue = props.selectedPlatform?.runtimeStatus.cards?.find((card) => card.id === 'webhook-url')?.value
+  return typeof cardValue === 'string' && cardValue.startsWith('http') ? cardValue : ''
+})
+const gitLabReviewWebhookUrl = computed(() => {
+  if (gitLabRuntimeWebhookUrl.value) return gitLabRuntimeWebhookUrl.value
+  const baseUrl = gitLabWebhookBaseUrl()
+  const secret = textValue(gitLabWebhookSecretFieldKey).trim() || '{webhookSecret}'
+  return `${baseUrl}/webhooks/gitlab/${encodeURIComponent(secret)}`
+})
 
 watch(
   () => props.selectedPlatform,
   (platform) => {
     resetForm(platform)
+    if (platform?.id === 'gitlab') {
+      loadGitLabReviewRuns()
+      loadWebhookStatus()
+    } else {
+      gitLabReviewRuns.value = []
+      gitLabRunsError.value = ''
+      webhookStatus.value = null
+      gitLabWebhookUrlMessage.value = ''
+      gitLabProjectSearchQuery.value = ''
+      gitLabProjectSearchResults.value = []
+      gitLabProjectSearchError.value = ''
+      gitLabGroupSearchQuery.value = ''
+      gitLabGroupSearchResults.value = []
+      gitLabGroupSearchError.value = ''
+    }
   },
   { immediate: true },
 )
@@ -185,6 +329,231 @@ function setTextValue(field: PlatformConfigField, event: Event) {
   }
 }
 
+function isGitLabReviewModelProviderField(field: PlatformConfigField) {
+  return isGitLabPlatform.value && field.key === gitLabReviewModelProviderFieldKey
+}
+
+function isGitLabReviewModelField(field: PlatformConfigField) {
+  return isGitLabPlatform.value && field.key === gitLabReviewModelFieldKey
+}
+
+function isGitLabProjectScopeJsonField(field: PlatformConfigField) {
+  return isGitLabPlatform.value && (
+    field.key === gitLabIncludedProjectsFieldKey ||
+    field.key === gitLabExcludedProjectsFieldKey ||
+    field.key === gitLabHookGroupsFieldKey
+  )
+}
+
+function shouldShowGitLabGenericField(field: PlatformConfigField) {
+  if (!isGitLabPlatform.value) return true
+  if (!gitLabAdvancedConfig.value) return false
+  if (gitLabMvpFieldKeys.has(field.key)) return false
+  return !isGitLabReviewModelProviderField(field) && !isGitLabProjectScopeJsonField(field)
+}
+
+function gitLabMvpFieldClass(field: PlatformConfigField) {
+  return {
+    wide: field.key === 'review.baseUrl' ||
+      field.key === 'review.webhookSecretRef' ||
+      field.key === 'review.tokenSecretRef' ||
+      field.key === 'review.modelId',
+  }
+}
+
+function gitLabReviewModelValue() {
+  const providerId = textValue(gitLabReviewModelProviderFieldKey)
+  const modelId = textValue(gitLabReviewModelFieldKey)
+  return providerId && modelId ? `${providerId}\t${modelId}` : ''
+}
+
+function setGitLabReviewModel(event: Event) {
+  const value = (event.target as HTMLSelectElement).value
+  if (!value) {
+    formValues[gitLabReviewModelProviderFieldKey] = ''
+    formValues[gitLabReviewModelFieldKey] = ''
+    return
+  }
+  const [providerId, ...modelParts] = value.split('\t')
+  formValues[gitLabReviewModelProviderFieldKey] = providerId || ''
+  formValues[gitLabReviewModelFieldKey] = modelParts.join('\t')
+}
+
+function gitLabWebhookBaseUrl() {
+  const status = webhookStatus.value
+  const base = status?.publicUrl || status?.localUrl || window.location.origin
+  return base.replace(/\/$/, '')
+}
+
+async function copyGitLabWebhookUrl() {
+  gitLabWebhookUrlMessage.value = ''
+  try {
+    await navigator.clipboard.writeText(gitLabReviewWebhookUrl.value)
+    gitLabWebhookUrlMessage.value = 'Webhook URL 已复制。'
+  } catch {
+    gitLabWebhookUrlMessage.value = '复制失败，请手动选中 URL 复制。'
+  }
+}
+
+function parseGitLabProjectRefs(input: string): GitLabProjectRef[] {
+  if (!input.trim()) return []
+  try {
+    const parsed = JSON.parse(input)
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .map((item) => {
+        if (typeof item === 'string' || typeof item === 'number') return { id: item }
+        if (!item || typeof item !== 'object') return undefined
+        const id = (item as any).id
+        if (typeof id !== 'string' && typeof id !== 'number') return undefined
+        return {
+          id,
+          pathWithNamespace: typeof (item as any).pathWithNamespace === 'string'
+            ? (item as any).pathWithNamespace
+            : typeof (item as any).path_with_namespace === 'string'
+              ? (item as any).path_with_namespace
+              : undefined,
+          webUrl: typeof (item as any).webUrl === 'string'
+            ? (item as any).webUrl
+            : typeof (item as any).web_url === 'string'
+              ? (item as any).web_url
+              : undefined,
+        }
+      })
+      .filter((item): item is GitLabProjectRef => Boolean(item))
+  } catch {
+    return []
+  }
+}
+
+function setGitLabProjectRefs(key: string, projects: GitLabProjectRef[]) {
+  formValues[key] = JSON.stringify(projects, null, 2)
+}
+
+function parseGitLabGroupRefs(input: string): GitLabGroupRef[] {
+  if (!input.trim()) return []
+  try {
+    const parsed = JSON.parse(input)
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .map((item) => {
+        if (typeof item === 'string' || typeof item === 'number') return { id: item }
+        if (!item || typeof item !== 'object') return undefined
+        const id = (item as any).id
+        if (typeof id !== 'string' && typeof id !== 'number') return undefined
+        return {
+          id,
+          fullPath: typeof (item as any).fullPath === 'string'
+            ? (item as any).fullPath
+            : typeof (item as any).full_path === 'string'
+              ? (item as any).full_path
+              : undefined,
+          webUrl: typeof (item as any).webUrl === 'string'
+            ? (item as any).webUrl
+            : typeof (item as any).web_url === 'string'
+              ? (item as any).web_url
+              : undefined,
+        }
+      })
+      .filter((item): item is GitLabGroupRef => Boolean(item))
+  } catch {
+    return []
+  }
+}
+
+function setGitLabGroupRefs(key: string, groups: GitLabGroupRef[]) {
+  formValues[key] = JSON.stringify(groups, null, 2)
+}
+
+function gitLabProjectLabel(project: GitLabProjectRef) {
+  return project.pathWithNamespace || String(project.id)
+}
+
+function gitLabGroupLabel(group: GitLabGroupRef) {
+  return group.fullPath || String(group.id)
+}
+
+function hasGitLabProject(projects: GitLabProjectRef[], project: GitLabProjectRef) {
+  return projects.some((item) => String(item.id) === String(project.id))
+}
+
+function hasGitLabGroup(groups: GitLabGroupRef[], group: GitLabGroupRef) {
+  return groups.some((item) => String(item.id) === String(group.id))
+}
+
+async function searchGitLabProjects() {
+  const platform = props.selectedPlatform
+  if (!platform || searchingGitLabProjects.value) return
+  searchingGitLabProjects.value = true
+  gitLabProjectSearchError.value = ''
+  try {
+    const result = await platformApi.action(platform.id, 'projects.search', {
+      input: { query: gitLabProjectSearchQuery.value },
+    })
+    const projects = Array.isArray(result.data?.projects) ? result.data.projects : []
+    gitLabProjectSearchResults.value = projects
+      .map((item: any) => ({
+        id: item.id,
+        pathWithNamespace: item.pathWithNamespace,
+        webUrl: item.webUrl,
+      }))
+      .filter((item: GitLabProjectRef) => typeof item.id === 'string' || typeof item.id === 'number')
+  } catch (error: any) {
+    gitLabProjectSearchError.value = error?.message || 'GitLab project search failed'
+  } finally {
+    searchingGitLabProjects.value = false
+  }
+}
+
+async function searchGitLabGroups() {
+  const platform = props.selectedPlatform
+  if (!platform || searchingGitLabGroups.value) return
+  searchingGitLabGroups.value = true
+  gitLabGroupSearchError.value = ''
+  try {
+    const result = await platformApi.action(platform.id, 'groups.search', {
+      input: { query: gitLabGroupSearchQuery.value },
+    })
+    const groups = Array.isArray(result.data?.groups) ? result.data.groups : []
+    gitLabGroupSearchResults.value = groups
+      .map((item: any) => ({
+        id: item.id,
+        fullPath: item.fullPath,
+        webUrl: item.webUrl,
+      }))
+      .filter((item: GitLabGroupRef) => typeof item.id === 'string' || typeof item.id === 'number')
+  } catch (error: any) {
+    gitLabGroupSearchError.value = error?.message || 'GitLab group search failed'
+  } finally {
+    searchingGitLabGroups.value = false
+  }
+}
+
+function addGitLabProject(key: string, project: GitLabProjectRef) {
+  const current = parseGitLabProjectRefs(textValue(key))
+  if (hasGitLabProject(current, project)) return
+  setGitLabProjectRefs(key, [...current, project])
+}
+
+function addGitLabGroup(key: string, group: GitLabGroupRef) {
+  const current = parseGitLabGroupRefs(textValue(key))
+  if (hasGitLabGroup(current, group)) return
+  setGitLabGroupRefs(key, [...current, group])
+}
+
+function removeGitLabGroup(key: string, group: GitLabGroupRef) {
+  setGitLabGroupRefs(key, parseGitLabGroupRefs(textValue(key)).filter((item) => String(item.id) !== String(group.id)))
+}
+
+function removeGitLabProject(key: string, project: GitLabProjectRef) {
+  setGitLabProjectRefs(key, parseGitLabProjectRefs(textValue(key)).filter((item) => String(item.id) !== String(project.id)))
+}
+
+function runGitLabAction(actionId: string) {
+  const action = props.selectedPlatform?.actions.find((item) => item.id === actionId)
+  if (action) runAction(action)
+}
+
 function clearSecretField(field: PlatformConfigField) {
   secretClears[field.key] = true
   formValues[field.key] = ''
@@ -296,6 +665,108 @@ function saveSettings() {
 
 function refreshStatus() {
   if (props.selectedPlatform) emit('refresh', props.selectedPlatform.id)
+  if (isGitLabPlatform.value) {
+    loadGitLabReviewRuns()
+    loadWebhookStatus()
+  }
+}
+
+async function loadWebhookStatus() {
+  try {
+    webhookStatus.value = await webhookApi.status()
+  } catch {
+    webhookStatus.value = null
+  }
+}
+
+async function loadGitLabReviewRuns() {
+  loadingGitLabRuns.value = true
+  gitLabRunsError.value = ''
+  try {
+    gitLabReviewRuns.value = await gitLabReviewApi.runs({ limit: 50 })
+  } catch (error: any) {
+    gitLabRunsError.value = error?.message || 'Failed to load GitLab review runs'
+  } finally {
+    loadingGitLabRuns.value = false
+  }
+}
+
+function canRetryGitLabRun(run: GitLabReviewRun) {
+  return run.status === 'failed' && !run.publishedAt
+}
+
+async function retryGitLabReviewRun(run: GitLabReviewRun) {
+  if (!canRetryGitLabRun(run) || retryingGitLabRunIds.value.has(run.id)) return
+  retryingGitLabRunIds.value = new Set([...retryingGitLabRunIds.value, run.id])
+  gitLabRunsError.value = ''
+  try {
+    await gitLabReviewApi.retry(run.id)
+    await loadGitLabReviewRuns()
+  } catch (error: any) {
+    gitLabRunsError.value = error?.message || 'Failed to retry GitLab review run'
+  } finally {
+    const next = new Set(retryingGitLabRunIds.value)
+    next.delete(run.id)
+    retryingGitLabRunIds.value = next
+  }
+}
+
+function formatRunTime(timestamp?: number) {
+  if (!timestamp) return 'n/a'
+  return new Date(timestamp).toLocaleString()
+}
+
+function reviewRunObject(run: GitLabReviewRun) {
+  const trigger = run.trigger || {}
+  if (trigger.objectType === 'mr') return `MR ${String(trigger.objectIid ?? '')}`.trim()
+  if (trigger.objectType === 'commit') return `Commit ${String(trigger.commitSha ?? '').slice(0, 8)}`
+  return run.id
+}
+
+function reviewRunDetail(run: GitLabReviewRun) {
+  const parts = [
+    run.sessionId ? `session ${run.sessionId}` : '',
+    run.turnSnapshotId ? `turn ${run.turnSnapshotId}` : '',
+    run.retryCount ? `retry ${run.retryCount}` : '',
+    run.lastRetryAt ? `last retry ${formatRunTime(run.lastRetryAt)}` : '',
+    run.failureNotifiedAt ? `failure noted ${formatRunTime(run.failureNotifiedAt)}` : '',
+    run.error ? `error ${run.error}` : '',
+    run.warnings?.length ? `${run.warnings.length} warning(s)` : '',
+  ].filter(Boolean)
+  return parts.length ? parts.join(' · ') : run.idempotencyKey || 'No details'
+}
+
+function gitLabIgnoredEventTitle(run: GitLabReviewRun) {
+  const trigger = run.trigger || {}
+  const project = trigger.projectPath || trigger.projectId || 'unknown project'
+  const event = trigger.eventName || 'event'
+  const target = reviewRunObject(run)
+  return `${String(project)} · ${String(event)} · ${target}`
+}
+
+function gitLabIgnoredEventDetail(run: GitLabReviewRun) {
+  const trigger = run.trigger || {}
+  const parts = [
+    trigger.host ? `host ${String(trigger.host)}` : '',
+    trigger.noteId ? `note ${String(trigger.noteId)}` : '',
+    trigger.headSha ? `head ${String(trigger.headSha).slice(0, 8)}` : '',
+    run.idempotencyKey ? `key ${run.idempotencyKey}` : '',
+  ].filter(Boolean)
+  return parts.length ? parts.join(' · ') : run.id
+}
+
+function gitLabIgnoredReasonLabel(run: GitLabReviewRun) {
+  const reason = run.error || String(run.trigger?.reason || 'ignored')
+  const labels: Record<string, string> = {
+    'project-not-allowed': 'Project excluded by review scope',
+    'webhook-auto-review-disabled': 'Auto review disabled',
+    'manual-trigger-disabled': 'Manual mention disabled',
+    'mention-not-found': 'No bot mention',
+    'mention-from-bot': 'Bot-authored note ignored',
+    'mention-out-of-scope': 'Mention is not a review request',
+    'mention-sensitive-request': 'Sensitive request rejected',
+  }
+  return labels[reason] || reason
 }
 
 function runAction(action: PlatformActionDescriptor) {
@@ -365,6 +836,10 @@ function buildActionInput(action: PlatformActionDescriptor) {
   delete actionJsonErrors[action.id]
   return input
 }
+
+function actionResultDetails(result: PlatformActionResult) {
+  return result.data ? JSON.stringify(result.data, null, 2) : ''
+}
 </script>
 
 <template>
@@ -429,6 +904,313 @@ function buildActionInput(action: PlatformActionDescriptor) {
             </span>
           </div>
 
+          <div v-if="isGitLabPlatform" class="platform-section gitlab-review-guide">
+            <div class="platform-section-heading-row">
+              <h5 class="platform-section-title">Webhook 触发入口</h5>
+              <code class="gitlab-webhook-path">{{ gitLabWebhookPath }}</code>
+            </div>
+            <p class="gitlab-guide-intro text-muted text-sm">
+              这个 URL 是 GitLab 平台 review 的专用入口，可以同时填到多个 Project、Group 或 System Hook。Nine1Bot 会根据 GitLab payload 里的 project id 和允许项目列表判断是否处理。
+            </p>
+            <div class="gitlab-mvp-callout">
+              <strong>最小运行路径</strong>
+              <span>填 GitLab base URL 和 API token，复制下方 webhook URL 到 GitLab Project/Group Hook，只勾选 Comments / Note events，然后在 MR 评论 `@Nine1bot review`。</span>
+            </div>
+            <div class="gitlab-webhook-url-box">
+              <span class="gitlab-guide-label">专用 Webhook URL</span>
+              <code class="gitlab-webhook-url">{{ gitLabReviewWebhookUrl }}</code>
+              <div class="gitlab-webhook-actions">
+                <button type="button" class="btn btn-ghost btn-sm" @click="copyGitLabWebhookUrl">
+                  <Copy :size="13" />
+                  <span>复制 URL</span>
+                </button>
+              </div>
+              <div class="gitlab-webhook-actions">
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-sm"
+                  :disabled="operationLocked"
+                  @click="runGitLabAction('webhook.sync-current-url')"
+                >
+                  <RefreshCw :size="13" />
+                  <span>{{ actionRunning === 'webhook.sync-current-url' ? '同步中' : '同步到 GitLab' }}</span>
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-sm"
+                  :disabled="operationLocked"
+                  @click="runGitLabAction('webhook.test')"
+                >
+                  <Play :size="13" />
+                  <span>{{ actionRunning === 'webhook.test' ? '测试中' : '测试 Hook' }}</span>
+                </button>
+              </div>
+              <span v-if="gitLabWebhookUrlMessage" class="gitlab-guide-text">{{ gitLabWebhookUrlMessage }}</span>
+            </div>
+            <form class="gitlab-mvp-form" @submit.prevent="saveSettings">
+              <div class="platform-section-heading-row">
+                <h5 class="platform-section-title">MVP 配置</h5>
+                <span class="gitlab-guide-text">默认只启用 @Nine1bot 手动审查，自动 MR 审查放在高级配置里。</span>
+              </div>
+              <div class="gitlab-mvp-field-grid">
+                <label
+                  v-for="field in gitLabMvpFields"
+                  :key="field.key"
+                  class="platform-field gitlab-mvp-field"
+                  :class="gitLabMvpFieldClass(field)"
+                >
+                  <span class="platform-field-label">{{ field.label }}</span>
+                  <span v-if="field.description" class="platform-field-desc text-muted text-sm">{{ field.description }}</span>
+
+                  <select
+                    v-if="isGitLabReviewModelField(field)"
+                    :value="gitLabReviewModelValue()"
+                    class="input platform-input"
+                    @change="setGitLabReviewModel"
+                  >
+                    <option value="">Use default chat model</option>
+                    <optgroup
+                      v-for="provider in providers.filter((item) => item.authenticated)"
+                      :key="provider.id"
+                      :label="provider.name"
+                    >
+                      <option
+                        v-for="model in provider.models"
+                        :key="`${provider.id}:${model.id}`"
+                        :value="`${provider.id}\t${model.id}`"
+                      >
+                        {{ model.name || model.id }}
+                      </option>
+                    </optgroup>
+                  </select>
+
+                  <label v-else-if="field.type === 'boolean'" class="platform-switch inline">
+                    <input v-model="formValues[field.key]" type="checkbox" />
+                    <span>{{ formValues[field.key] ? '开启' : '关闭' }}</span>
+                  </label>
+
+                  <div v-else-if="isSecretField(field)" class="platform-secret-input">
+                    <input
+                      :type="fieldInputType(field)"
+                      :value="textValue(field.key)"
+                      class="input platform-input"
+                      :placeholder="secretStatus(field)"
+                      @input="setTextValue(field, $event)"
+                    />
+                    <button
+                      v-if="isRedactedSecret(selectedPlatform.settings[field.key]) && !secretClears[field.key]"
+                      type="button"
+                      class="btn btn-ghost btn-sm"
+                      @click="clearSecretField(field)"
+                    >
+                      <Trash2 :size="13" />
+                      <span>清除</span>
+                    </button>
+                  </div>
+
+                  <input
+                    v-else
+                    :type="fieldInputType(field)"
+                    :value="textValue(field.key)"
+                    class="input platform-input"
+                    placeholder=""
+                    @input="setTextValue(field, $event)"
+                  />
+
+                  <span v-if="isSecretField(field) && secretStatus(field)" class="platform-field-desc text-muted text-sm">
+                    {{ secretStatus(field) }}
+                  </span>
+                  <span v-if="jsonErrors[field.key]" class="platform-field-error">{{ jsonErrors[field.key] }}</span>
+                </label>
+              </div>
+              <div class="gitlab-webhook-actions">
+                <button class="btn btn-primary btn-sm" type="submit" :disabled="operationLocked">
+                  <Save :size="13" />
+                  <span>{{ saving ? '保存中' : '保存 MVP 配置' }}</span>
+                </button>
+                <button type="button" class="btn btn-ghost btn-sm" :disabled="operationLocked" @click="runGitLabAction('connection.test')">
+                  <Play :size="13" />
+                  <span>{{ actionRunning === 'connection.test' ? '测试中' : '测试 API token' }}</span>
+                </button>
+                <button type="button" class="btn btn-ghost btn-sm" :disabled="operationLocked" @click="runGitLabAction('webhook.test')">
+                  <Play :size="13" />
+                  <span>{{ actionRunning === 'webhook.test' ? '测试中' : '测试 Project Hook' }}</span>
+                </button>
+                <label class="platform-switch inline gitlab-advanced-toggle">
+                  <input v-model="gitLabAdvancedConfig" type="checkbox" />
+                  <span>高级配置</span>
+                </label>
+              </div>
+            </form>
+            <div v-if="gitLabAdvancedConfig" class="gitlab-hook-mode-grid">
+              <div class="gitlab-hook-mode-card">
+                <span class="gitlab-guide-label">Project Hook</span>
+                <span class="gitlab-guide-text">适合少量项目测试。每个项目单独配置，边界最清楚。</span>
+              </div>
+              <div class="gitlab-hook-mode-card recommended">
+                <span class="gitlab-guide-label">Group Hook</span>
+                <span class="gitlab-guide-text">推荐团队使用。一个 group 配一次，组内项目共用同一个 URL。</span>
+              </div>
+              <div class="gitlab-hook-mode-card">
+                <span class="gitlab-guide-label">System Hook</span>
+                <span class="gitlab-guide-text">适合自托管管理员统一接入。事件范围最大，必须配合允许项目列表。</span>
+              </div>
+            </div>
+            <div v-if="gitLabAdvancedConfig" class="gitlab-guide-grid">
+              <div class="gitlab-guide-item">
+                <span class="gitlab-guide-label">需要勾选的事件</span>
+                <span class="gitlab-guide-text">勾选 Comments / Note events 用于 @Nine1bot review。需要自动审查时，再勾选 Merge request events。</span>
+              </div>
+              <div class="gitlab-guide-item">
+                <span class="gitlab-guide-label">Secret token</span>
+                <span class="gitlab-guide-text">使用上面的 path secret URL 时，GitLab 的 Secret token 字段留空。若改用 /webhooks/gitlab，则 Secret token 填同一个 webhook secret。</span>
+              </div>
+              <div class="gitlab-guide-item">
+                <span class="gitlab-guide-label">项目范围</span>
+                <span class="gitlab-guide-text">同一个 URL 可以给多个项目共用；用允许项目列表限制真正会触发 review 的 project id。</span>
+              </div>
+              <div class="gitlab-guide-item">
+                <span class="gitlab-guide-label">Review 模型</span>
+                <span class="gitlab-guide-text">模型来自已认证的 Chat providers。当前可选模型数：{{ authenticatedModelCount }}。</span>
+              </div>
+            </div>
+            <div v-if="gitLabAdvancedConfig" class="gitlab-scope-picker">
+              <div class="platform-section-heading-row">
+                <h5 class="platform-section-title">Review 范围</h5>
+                <span class="gitlab-guide-text">{{ gitLabScopeMode === 'selected-only' ? '仅处理选中的项目' : '处理 Hook 收到的项目，排除黑名单' }}</span>
+              </div>
+              <div class="gitlab-project-search-row">
+                <input
+                  v-model="gitLabProjectSearchQuery"
+                  class="input platform-input"
+                  placeholder="搜索 GitLab 项目，例如 root/uftest"
+                  @keydown.enter.prevent="searchGitLabProjects"
+                />
+                <button type="button" class="btn btn-secondary btn-sm" :disabled="searchingGitLabProjects" @click="searchGitLabProjects">
+                  <RefreshCw :size="13" />
+                  <span>{{ searchingGitLabProjects ? '搜索中' : '搜索项目' }}</span>
+                </button>
+              </div>
+              <div v-if="gitLabProjectSearchError" class="platform-alert warning">{{ gitLabProjectSearchError }}</div>
+              <div v-if="gitLabProjectSearchResults.length" class="gitlab-project-result-list">
+                <div v-for="project in gitLabProjectSearchResults" :key="String(project.id)" class="gitlab-project-row">
+                  <div>
+                    <strong>{{ gitLabProjectLabel(project) }}</strong>
+                    <span class="text-muted text-sm">ID {{ project.id }}</span>
+                  </div>
+                  <div class="gitlab-project-actions">
+                    <button type="button" class="btn btn-ghost btn-sm" @click="addGitLabProject(gitLabIncludedProjectsFieldKey, project)">
+                      加入包含
+                    </button>
+                    <button type="button" class="btn btn-ghost btn-sm" @click="addGitLabProject(gitLabExcludedProjectsFieldKey, project)">
+                      加入排除
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div class="gitlab-selected-project-grid">
+                <div class="gitlab-selected-project-box">
+                  <span class="gitlab-guide-label">包含项目</span>
+                  <p class="gitlab-guide-text">selected-only 模式下只处理这里的项目；all-received 模式下也用于 Project Hook 同步。</p>
+                  <div v-if="gitLabIncludedProjects.length" class="gitlab-project-chip-list">
+                    <button
+                      v-for="project in gitLabIncludedProjects"
+                      :key="String(project.id)"
+                      type="button"
+                      class="gitlab-project-chip"
+                      @click="removeGitLabProject(gitLabIncludedProjectsFieldKey, project)"
+                    >
+                      {{ gitLabProjectLabel(project) }} ×
+                    </button>
+                  </div>
+                  <span v-else class="text-muted text-sm">尚未选择项目</span>
+                </div>
+                <div class="gitlab-selected-project-box">
+                  <span class="gitlab-guide-label">排除项目</span>
+                  <p class="gitlab-guide-text">这些项目不会触发手动 mention 或自动 review。</p>
+                  <div v-if="gitLabExcludedProjects.length" class="gitlab-project-chip-list">
+                    <button
+                      v-for="project in gitLabExcludedProjects"
+                      :key="String(project.id)"
+                      type="button"
+                      class="gitlab-project-chip"
+                      @click="removeGitLabProject(gitLabExcludedProjectsFieldKey, project)"
+                    >
+                      {{ gitLabProjectLabel(project) }} ×
+                    </button>
+                  </div>
+                  <span v-else class="text-muted text-sm">没有排除项目</span>
+                </div>
+              </div>
+            </div>
+            <div v-if="gitLabAdvancedConfig" class="gitlab-scope-picker">
+              <div class="platform-section-heading-row">
+                <h5 class="platform-section-title">Group Hook 管理</h5>
+                <span class="gitlab-guide-text">Group Hook 决定能收到哪些项目事件；Review 范围继续决定实际处理哪些项目。</span>
+              </div>
+              <div class="gitlab-project-search-row">
+                <input
+                  v-model="gitLabGroupSearchQuery"
+                  class="input platform-input"
+                  placeholder="搜索 GitLab Group，例如 root 或 backend"
+                  @keydown.enter.prevent="searchGitLabGroups"
+                />
+                <button type="button" class="btn btn-secondary btn-sm" :disabled="searchingGitLabGroups" @click="searchGitLabGroups">
+                  <RefreshCw :size="13" />
+                  <span>{{ searchingGitLabGroups ? '搜索中' : '搜索 Group' }}</span>
+                </button>
+              </div>
+              <div class="gitlab-webhook-actions">
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-sm"
+                  :disabled="operationLocked"
+                  @click="runGitLabAction('group-hooks.sync-current-url')"
+                >
+                  <RefreshCw :size="13" />
+                  <span>{{ actionRunning === 'group-hooks.sync-current-url' ? '同步中' : '同步 Group Hooks' }}</span>
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-sm"
+                  :disabled="operationLocked"
+                  @click="runGitLabAction('group-hooks.test')"
+                >
+                  <Play :size="13" />
+                  <span>{{ actionRunning === 'group-hooks.test' ? '测试中' : '测试 Group Hooks' }}</span>
+                </button>
+              </div>
+              <div v-if="gitLabGroupSearchError" class="platform-alert warning">{{ gitLabGroupSearchError }}</div>
+              <div v-if="gitLabGroupSearchResults.length" class="gitlab-project-result-list">
+                <div v-for="group in gitLabGroupSearchResults" :key="String(group.id)" class="gitlab-project-row">
+                  <div>
+                    <strong>{{ gitLabGroupLabel(group) }}</strong>
+                    <span class="text-muted text-sm">ID {{ group.id }}</span>
+                  </div>
+                  <button type="button" class="btn btn-ghost btn-sm" @click="addGitLabGroup(gitLabHookGroupsFieldKey, group)">
+                    加入 Hook Groups
+                  </button>
+                </div>
+              </div>
+              <div class="gitlab-selected-project-box">
+                <span class="gitlab-guide-label">Hook Groups</span>
+                <p class="gitlab-guide-text">Nine1Bot 会为这些 group 创建或更新 group hook；System Hook 仍需在 GitLab 管理后台手动配置。</p>
+                <div v-if="gitLabHookGroups.length" class="gitlab-project-chip-list">
+                  <button
+                    v-for="group in gitLabHookGroups"
+                    :key="String(group.id)"
+                    type="button"
+                    class="gitlab-project-chip"
+                    @click="removeGitLabGroup(gitLabHookGroupsFieldKey, group)"
+                  >
+                    {{ gitLabGroupLabel(group) }} ×
+                  </button>
+                </div>
+                <span v-else class="text-muted text-sm">尚未选择 Group</span>
+              </div>
+            </div>
+          </div>
+
           <div class="platform-section">
             <h5 class="platform-section-title">状态</h5>
             <div class="platform-status-grid">
@@ -447,7 +1229,72 @@ function buildActionInput(action: PlatformActionDescriptor) {
             </p>
           </div>
 
-          <div class="platform-section">
+          <div v-if="isGitLabPlatform" class="platform-section">
+            <div class="platform-section-heading-row">
+              <h5 class="platform-section-title">GitLab Review Runs</h5>
+              <button class="btn btn-ghost btn-sm" :disabled="loadingGitLabRuns" @click="loadGitLabReviewRuns">
+                <RefreshCw :size="13" />
+                <span>{{ loadingGitLabRuns ? 'Loading' : 'Refresh' }}</span>
+              </button>
+            </div>
+            <p class="text-muted text-sm">
+              最近 8 条 review run。这里用于观察触发、运行、发布和失败回写状态；失败且尚未发布的 run 可以重试。
+            </p>
+            <div v-if="gitLabRunsError" class="platform-alert warning">
+              {{ gitLabRunsError }}
+            </div>
+            <div v-else-if="visibleGitLabRuns.length" class="gitlab-run-list">
+              <div v-for="run in visibleGitLabRuns" :key="run.id" class="gitlab-run-row">
+                <div class="gitlab-run-main">
+                  <span class="gitlab-run-title">{{ reviewRunObject(run) }}</span>
+                  <span class="gitlab-run-meta">{{ run.id }} · {{ formatRunTime(run.updatedAt) }}</span>
+                  <span class="gitlab-run-meta">{{ reviewRunDetail(run) }}</span>
+                </div>
+                <details
+                  v-if="run.error || run.warnings?.length || run.idempotencyKey"
+                  class="gitlab-run-details"
+                >
+                  <summary>Details</summary>
+                  <div class="gitlab-run-detail-body">
+                    <div v-if="run.error" class="gitlab-run-detail-line">
+                      <span>Error</span>
+                      <code>{{ run.error }}</code>
+                    </div>
+                    <div v-if="run.idempotencyKey" class="gitlab-run-detail-line">
+                      <span>Idempotency</span>
+                      <code>{{ run.idempotencyKey }}</code>
+                    </div>
+                    <div v-if="run.warnings?.length" class="gitlab-run-detail-line">
+                      <span>Warnings</span>
+                      <ul>
+                        <li v-for="warning in run.warnings" :key="warning">{{ warning }}</li>
+                      </ul>
+                    </div>
+                  </div>
+                </details>
+                <div class="gitlab-run-side">
+                  <button
+                    v-if="canRetryGitLabRun(run)"
+                    class="btn btn-ghost btn-sm"
+                    :disabled="retryingGitLabRunIds.has(run.id)"
+                    @click="retryGitLabReviewRun(run)"
+                  >
+                    <RefreshCw :size="13" />
+                    <span>{{ retryingGitLabRunIds.has(run.id) ? 'Retrying' : 'Retry' }}</span>
+                  </button>
+                  <span class="platform-status-pill" :class="statusClass(run.status === 'succeeded' ? 'available' : run.status === 'failed' ? 'error' : 'degraded')">
+                    {{ run.status }}
+                  </span>
+                  <span v-if="run.publishedAt" class="gitlab-run-published">published</span>
+                </div>
+              </div>
+            </div>
+            <p v-else class="text-muted text-sm">
+              No GitLab review runs yet.
+            </p>
+          </div>
+
+          <div v-if="!isGitLabPlatform || gitLabAdvancedConfig" class="platform-section">
             <h5 class="platform-section-title">能力</h5>
             <div class="platform-chip-row">
               <span v-for="label in capabilityLabels(selectedPlatform)" :key="label" class="platform-chip">
@@ -456,20 +1303,78 @@ function buildActionInput(action: PlatformActionDescriptor) {
             </div>
           </div>
 
-          <form v-if="selectedPlatform.config?.sections.length" class="platform-section" @submit.prevent="saveSettings">
-            <h5 class="platform-section-title">配置</h5>
-            <div v-for="section in selectedPlatform.config.sections" :key="section.id" class="platform-form-section">
+          <div v-if="isGitLabPlatform && gitLabAdvancedConfig" class="platform-section">
+            <div class="platform-section-heading-row">
+              <h5 class="platform-section-title">Ignored GitLab Events</h5>
+              <button class="btn btn-ghost btn-sm" :disabled="loadingGitLabRuns" @click="loadGitLabReviewRuns">
+                <RefreshCw :size="13" />
+                <span>{{ loadingGitLabRuns ? 'Loading' : 'Refresh' }}</span>
+              </button>
+            </div>
+            <p class="text-muted text-sm">
+              最近被 Nine1Bot 收到但没有触发 review 的 webhook。这里主要用来排查 Project/Group/System Hook 范围、黑名单、mention 和自动审查开关。
+            </p>
+            <div v-if="visibleGitLabIgnoredEvents.length" class="gitlab-run-list">
+              <div v-for="run in visibleGitLabIgnoredEvents" :key="run.id" class="gitlab-run-row ignored">
+                <div class="gitlab-run-main">
+                  <span class="gitlab-run-title">{{ gitLabIgnoredEventTitle(run) }}</span>
+                  <span class="gitlab-run-meta">{{ formatRunTime(run.updatedAt) }}</span>
+                  <span class="gitlab-run-meta">{{ gitLabIgnoredEventDetail(run) }}</span>
+                </div>
+                <div class="gitlab-run-side">
+                  <span class="platform-status-pill tone-warning">{{ gitLabIgnoredReasonLabel(run) }}</span>
+                </div>
+              </div>
+            </div>
+            <p v-else class="text-muted text-sm">
+              No ignored GitLab events yet.
+            </p>
+          </div>
+
+          <form v-if="configFormSections.length && (!isGitLabPlatform || gitLabAdvancedConfig)" class="platform-section" @submit.prevent="saveSettings">
+            <h5 class="platform-section-title">{{ isGitLabPlatform ? 'GitLab Review 配置' : '配置' }}</h5>
+            <div v-for="section in configFormSections" :key="section.id" class="platform-form-section">
               <div class="platform-form-section-header">
                 <span class="platform-form-section-title">{{ section.title }}</span>
                 <span v-if="section.description" class="text-muted text-sm">{{ section.description }}</span>
               </div>
 
-              <label v-for="field in section.fields" :key="field.key" class="platform-field">
+              <label
+                v-for="field in section.fields"
+                v-show="shouldShowGitLabGenericField(field)"
+                :key="field.key"
+                class="platform-field"
+              >
                 <span class="platform-field-label">{{ field.label }}</span>
                 <span v-if="field.description" class="platform-field-desc text-muted text-sm">{{ field.description }}</span>
 
                 <select
-                  v-if="field.type === 'select'"
+                  v-if="isGitLabReviewModelField(field)"
+                  :value="gitLabReviewModelValue()"
+                  class="input platform-input"
+                  @change="setGitLabReviewModel"
+                >
+                  <option value="">Use default chat model</option>
+                  <optgroup
+                    v-for="provider in providers.filter((item) => item.authenticated)"
+                    :key="provider.id"
+                    :label="provider.name"
+                  >
+                    <option
+                      v-for="model in provider.models"
+                      :key="`${provider.id}:${model.id}`"
+                      :value="`${provider.id}\t${model.id}`"
+                    >
+                      {{ model.name || model.id }}
+                    </option>
+                  </optgroup>
+                </select>
+                <span v-else-if="isGitLabReviewModelField(field)" class="platform-field-desc text-muted text-sm">
+                  Models come from the same configured providers used by Chat.
+                </span>
+
+                <select
+                  v-else-if="field.type === 'select'"
                   :value="textValue(field.key)"
                   class="input platform-input"
                   @change="setTextValue(field, $event)"
@@ -523,6 +1428,7 @@ function buildActionInput(action: PlatformActionDescriptor) {
             <div class="platform-action-list">
               <form
                 v-for="action in selectedPlatform.actions"
+                v-show="!(isGitLabPlatform && (action.id === 'projects.search' || action.id === 'groups.search'))"
                 :key="action.id"
                 class="platform-action-item"
                 @submit.prevent="runAction(action)"
@@ -602,6 +1508,7 @@ function buildActionInput(action: PlatformActionDescriptor) {
             </div>
             <div v-if="actionResult" class="platform-alert" :class="actionResult.status === 'ok' ? 'success' : 'warning'">
               {{ actionResult.message || actionResult.status }}
+              <pre v-if="actionResultDetails(actionResult)" class="platform-action-result-data">{{ actionResultDetails(actionResult) }}</pre>
             </div>
           </div>
 
@@ -631,6 +1538,13 @@ function buildActionInput(action: PlatformActionDescriptor) {
   display: flex;
   flex-direction: column;
   gap: var(--space-lg);
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  padding: var(--space-lg);
+  overflow: auto;
+  background: var(--bg-primary);
+  color: var(--text-primary);
 }
 
 .section-title {
@@ -751,10 +1665,214 @@ function buildActionInput(action: PlatformActionDescriptor) {
   margin: 0;
 }
 
+.platform-section-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+}
+
 .platform-status-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-sm);
+}
+
+.gitlab-review-guide {
+  padding: 12px;
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+}
+
+.gitlab-webhook-path {
+  padding: 2px 6px;
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.gitlab-guide-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-sm);
+}
+
+.gitlab-guide-intro {
+  margin: 0;
+}
+
+.gitlab-webhook-url-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.gitlab-webhook-url {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.gitlab-webhook-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+
+.gitlab-scope-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: 12px;
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.gitlab-mvp-callout {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 0.5px solid color-mix(in srgb, var(--accent) 24%, var(--border-subtle));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-primary));
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.gitlab-mvp-callout strong {
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.gitlab-mvp-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.gitlab-mvp-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-md);
+}
+
+.gitlab-mvp-field.wide {
+  grid-column: 1 / -1;
+}
+
+.gitlab-advanced-toggle {
+  margin-left: auto;
+}
+
+.gitlab-project-search-row,
+.gitlab-project-row,
+.gitlab-project-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.gitlab-project-search-row .platform-input {
+  flex: 1;
+}
+
+.gitlab-project-result-list,
+.gitlab-project-chip-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.gitlab-project-row {
+  justify-content: space-between;
+  padding: 8px 10px;
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+}
+
+.gitlab-selected-project-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-sm);
+}
+
+.gitlab-selected-project-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: 10px;
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.gitlab-project-chip {
+  text-align: left;
+  padding: 6px 8px;
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.gitlab-hook-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-sm);
+}
+
+.gitlab-hook-mode-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 76px;
+  padding: 10px 12px;
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.gitlab-hook-mode-card.recommended {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border-subtle));
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-primary));
+}
+
+.gitlab-guide-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.gitlab-guide-label {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.gitlab-guide-text {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .platform-status-card {
@@ -797,6 +1915,96 @@ function buildActionInput(action: PlatformActionDescriptor) {
   background: var(--bg-tertiary);
   color: var(--text-secondary);
   font-size: 12px;
+}
+
+.gitlab-run-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.gitlab-run-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 0.5px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.gitlab-run-row.ignored {
+  background: color-mix(in srgb, var(--warning, #f59e0b) 8%, var(--bg-primary));
+  border-color: color-mix(in srgb, var(--warning, #f59e0b) 30%, var(--border-subtle));
+}
+
+.gitlab-run-row:has(.gitlab-run-details[open]) {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.gitlab-run-main,
+.gitlab-run-side {
+  display: flex;
+  min-width: 0;
+}
+
+.gitlab-run-main {
+  flex-direction: column;
+}
+
+.gitlab-run-side {
+  align-items: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+
+.gitlab-run-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.gitlab-run-meta,
+.gitlab-run-published {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.gitlab-run-details {
+  flex-basis: 100%;
+  order: 3;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.gitlab-run-details summary {
+  cursor: pointer;
+}
+
+.gitlab-run-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.gitlab-run-detail-line {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: var(--space-sm);
+}
+
+.gitlab-run-detail-line code,
+.gitlab-run-detail-line ul {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.gitlab-run-detail-line ul {
+  padding-left: 16px;
 }
 
 .platform-form-section {
@@ -866,6 +2074,14 @@ function buildActionInput(action: PlatformActionDescriptor) {
 
 .platform-action-form {
   margin-top: var(--space-sm);
+}
+
+.platform-action-result-data {
+  margin-top: var(--space-xs);
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 12px;
 }
 
 .platform-form-section.compact {
@@ -967,6 +2183,11 @@ function buildActionInput(action: PlatformActionDescriptor) {
   }
 
   .platform-status-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .gitlab-guide-grid,
+  .gitlab-hook-mode-grid {
     grid-template-columns: 1fr;
   }
 }

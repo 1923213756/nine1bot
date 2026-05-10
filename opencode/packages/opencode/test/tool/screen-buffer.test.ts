@@ -55,4 +55,50 @@ describe("ScreenBuffer", () => {
     expect(ansi).toContain("new3")
     expect(ansi).not.toContain("old1")
   })
+
+  test("serializes overlapping writes before reads and waits", async () => {
+    const buffer = createBuffer({ rows: 3, cols: 40, scrollback: 100 })
+
+    const first = buffer.write("first")
+    const second = buffer.write("\r\nsecond")
+    await Promise.all([first, second])
+
+    expect(buffer.getScreen()).toEqual(["first", "second", ""])
+    await expect(buffer.waitForPattern("second", 100)).resolves.toEqual({
+      matched: true,
+      timedOut: false,
+    })
+  })
+
+  test("serializes resize after pending writes", async () => {
+    const buffer = createBuffer({ rows: 3, cols: 20, scrollback: 100 })
+    const term = (buffer as unknown as {
+      term: {
+        rows: number
+        cols: number
+        write(data: string, callback: () => void): void
+      }
+    }).term
+    const originalWrite = term.write.bind(term)
+    let finishWrite: (() => void) | undefined
+
+    term.write = (data: string, callback: () => void) => {
+      originalWrite(data, () => {
+        finishWrite = callback
+      })
+    }
+
+    const write = buffer.write("wrapped text that should parse before resize")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const resize = buffer.resize(4, 10)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(term.rows).toBe(3)
+    expect(term.cols).toBe(20)
+
+    finishWrite?.()
+    await Promise.all([write, resize])
+    expect(term.rows).toBe(4)
+    expect(term.cols).toBe(10)
+  })
 })

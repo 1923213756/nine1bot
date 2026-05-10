@@ -37,6 +37,7 @@ export namespace ScreenBuffer {
   export class Buffer {
     private term: Terminal
     private config: Config
+    private writeChain: Promise<void> = Promise.resolve()
 
     constructor(config: Partial<Config> = {}) {
       this.config = { ...DEFAULT_CONFIG, ...config }
@@ -52,14 +53,28 @@ export namespace ScreenBuffer {
      * 处理 PTY 输出数据
      */
     async write(data: string): Promise<void> {
-      return new Promise((resolve) => this.term.write(data, resolve))
+      const next = this.writeChain.then(
+        () =>
+          new Promise<void>((resolve) => {
+            this.term.write(data, resolve)
+          }),
+      )
+      this.writeChain = next.catch(() => undefined)
+      return next
     }
 
     /**
-     * 同步写入（不等待处理完成）
+     * 兼容旧调用方的写入入口。实际写入仍进入串行队列。
      */
-    writeSync(data: string): void {
-      this.term.write(data)
+    writeSync(data: string): Promise<void> {
+      return this.write(data)
+    }
+
+    /**
+     * 等待所有已提交的数据完成解析。
+     */
+    async flush(): Promise<void> {
+      await this.writeChain
     }
 
     /**
@@ -268,10 +283,14 @@ export namespace ScreenBuffer {
     /**
      * 调整终端大小
      */
-    resize(rows: number, cols: number): void {
-      this.term.resize(cols, rows)
-      this.config.rows = rows
-      this.config.cols = cols
+    async resize(rows: number, cols: number): Promise<void> {
+      const next = this.writeChain.then(() => {
+        this.term.resize(cols, rows)
+        this.config.rows = rows
+        this.config.cols = cols
+      })
+      this.writeChain = next.catch(() => undefined)
+      return next
     }
 
     /**
@@ -282,6 +301,7 @@ export namespace ScreenBuffer {
       const startTime = Date.now()
 
       while (Date.now() - startTime < timeout) {
+        await this.flush()
         const screenText = this.getFullView(20)
         if (regex.test(screenText)) {
           return { matched: true, timedOut: false }

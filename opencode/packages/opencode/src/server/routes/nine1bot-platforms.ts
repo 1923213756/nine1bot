@@ -80,7 +80,7 @@ export const Nine1BotPlatformRoutes = () =>
   new Hono()
     .get("/", async (c) => {
       try {
-        const manager = getBuiltinPlatformManager()
+        const manager = await syncManagerFromConfig()
         return c.json({
           platforms: manager.listSummaries(),
         })
@@ -90,7 +90,9 @@ export const Nine1BotPlatformRoutes = () =>
     })
     .get("/:id", async (c) => {
       try {
-        const detail = await getBuiltinPlatformManager().getDetail(c.req.param("id"))
+        const manager = await syncManagerFromConfig()
+        await manager.refreshStatus(c.req.param("id"))
+        const detail = await manager.getDetail(c.req.param("id"))
         if (!detail) throw new PlatformNotFoundError(c.req.param("id"))
         return c.json(detail)
       } catch (error) {

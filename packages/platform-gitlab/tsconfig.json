@@ -8,8 +8,12 @@
     "skipLibCheck": true,
     "declaration": false,
     "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@nine1bot/platform-protocol": ["../platform-protocol/src/index.ts"]
+    },
     "types": ["bun-types"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

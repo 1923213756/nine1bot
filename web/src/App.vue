@@ -9,7 +9,7 @@ import { useSessionMode } from './composables/useSessionMode'
 import { useProjects } from './composables/useProjects'
 import { useGlobalRecentSessions } from './composables/useGlobalRecentSessions'
 import { collectActivePageContext, type RequestPagePayload } from './api/page-context'
-import { api, type GlobalSSEEventEnvelope, type Session } from './api/client'
+import { api, type EventStreamSubscription, type GlobalSSEEventEnvelope, type Session } from './api/client'
 import Header from './components/Header.vue'
 import Sidebar from './components/Sidebar.vue'
 import ChatPanel from './components/ChatPanel.vue'
@@ -83,7 +83,11 @@ const {
 } = useSession()
 
 // Agent 终端
-const { handleSSEEvent: handleTerminalEvent, terminals: agentTerminals } = useAgentTerminal()
+const {
+  handleSSEEvent: handleTerminalEvent,
+  terminals: agentTerminals,
+  setSessionContext: setTerminalSessionContext,
+} = useAgentTerminal()
 
 // 文件预览
 const { handleSSEEvent: handlePreviewEvent } = useFilePreview()
@@ -102,7 +106,18 @@ const {
   clearFileContent,
 } = useFiles()
 
-const { showSettings, openSettings, closeSettings, activeTab: settingsTab, currentProvider, currentModel, providers, selectModel: settingsSelectModel, loadProviders, loadConfig } = useSettings()
+const {
+  showSettings,
+  openSettings,
+  closeSettings,
+  activeTab: settingsTab,
+  currentProvider,
+  currentModel,
+  providers,
+  selectModel: settingsSelectModel,
+  loadProviders,
+  loadConfig,
+} = useSettings()
 
 const { isBrowserExtension } = useClientSurface()
 
@@ -243,7 +258,7 @@ async function handleSelectModel(providerId: string, modelId: string) {
 let stopSessionWatch: (() => void) | null = null
 let unregisterTerminalHandler: (() => void) | null = null
 let unregisterPreviewHandler: (() => void) | null = null
-let globalEventSource: EventSource | null = null
+let globalEventSource: EventStreamSubscription | null = null
 let projectsRefreshTimer: ReturnType<typeof setTimeout> | null = null
 
 async function refreshGlobalRecentsIfAgent() {
@@ -386,10 +401,11 @@ onMounted(async () => {
 
   // 设置会话切换的 watch
   stopSessionWatch = watch(currentSession, async () => {
+    setTerminalSessionContext(currentSession.value?.id || null)
     if (currentSession.value) {
       await loadPendingRequests()
     }
-  })
+  }, { immediate: true })
 
   // Sync parallel session status from backend (for page refresh recovery)
   await syncSessionStatus()

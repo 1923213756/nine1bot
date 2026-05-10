@@ -589,23 +589,29 @@ export class PlatformAdapterManager {
     const registeredSkills = new Set(registered.skills.map((source) => source.id))
 
     return {
-      agents: (normalizedSources.agents ?? []).map((source) => ({
-        id: source.id,
-        directory: source.directory,
-        namespace: source.namespace,
-        visibility: source.visibility,
-        status: registeredAgents.has(source.id) ? 'registered' : status,
-        error: runtimeSourceError(record, source.id, status),
-      })),
-      skills: (normalizedSources.skills ?? []).map((source) => ({
-        id: source.id,
-        directory: source.directory,
-        namespace: source.namespace,
-        includeNamePrefix: source.includeNamePrefix,
-        visibility: source.visibility,
-        status: registeredSkills.has(source.id) ? 'registered' : status,
-        error: runtimeSourceError(record, source.id, status),
-      })),
+      agents: (normalizedSources.agents ?? []).map((source) => {
+        const sourceStatus = registeredAgents.has(source.id) ? 'registered' : status
+        return {
+          id: source.id,
+          directory: source.directory,
+          namespace: source.namespace,
+          visibility: source.visibility,
+          status: sourceStatus,
+          error: runtimeSourceError(record, source.id, sourceStatus),
+        }
+      }),
+      skills: (normalizedSources.skills ?? []).map((source) => {
+        const sourceStatus = registeredSkills.has(source.id) ? 'registered' : status
+        return {
+          id: source.id,
+          directory: source.directory,
+          namespace: source.namespace,
+          includeNamePrefix: source.includeNamePrefix,
+          visibility: source.visibility,
+          status: sourceStatus,
+          error: runtimeSourceError(record, source.id, sourceStatus),
+        }
+      }),
     }
   }
 
