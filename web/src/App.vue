@@ -98,7 +98,18 @@ const {
   clearFileContent,
 } = useFiles()
 
-const { showSettings, openSettings, closeSettings, activeTab: settingsTab, currentProvider, currentModel, providers, selectModel: settingsSelectModel, loadProviders, loadConfig } = useSettings()
+const {
+  showSettings,
+  openSettings,
+  closeSettings,
+  activeTab: settingsTab,
+  currentProvider,
+  currentModel,
+  providers,
+  selectModel: settingsSelectModel,
+  loadProviders,
+  loadConfig,
+} = useSettings()
 
 // App mode (chat / agent)
 const { mode: appMode, setMode: setAppMode } = useAppMode()

@@ -1,0 +1,14 @@
+[
+  {
+    "taskId": "qa-verification",
+    "text": "```json\n{\"stage\":\"verification\",\"status\":\"ok\",\"summary\":\"QA found one regression risk.\",\"findings\":[{\"title\":\"Missing permission check\",\"body\":\"QA evidence from the changed route.\",\"severity\":\"major\",\"category\":\"correctness\",\"file\":\"src/auth.ts\",\"newLine\":20}],\"nextActions\":[\"Add a regression test for unauthorized access.\"]}\n```"
+  },
+  {
+    "taskId": "security-verification",
+    "text": "{\"stage\":\"verification\",\"status\":\"ok\",\"summary\":\"Security found the same issue.\",\"findings\":[{\"title\":\"Missing permission check\",\"body\":\"Security evidence from the changed route.\",\"severity\":\"critical\",\"category\":\"correctness\",\"file\":\"src/auth.ts\",\"newLine\":20}]}"
+  },
+  {
+    "taskId": "frontend-review",
+    "error": "not applicable for backend-only diff"
+  }
+]

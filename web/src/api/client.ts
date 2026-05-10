@@ -501,6 +501,43 @@ export interface WebhookStatus {
   }
 }
 
+export interface GitLabReviewRun {
+  id: string
+  platform: 'gitlab'
+  idempotencyKey?: string
+  status: 'accepted' | 'rejected' | 'blocked' | 'running' | 'succeeded' | 'failed'
+  createdAt: number
+  updatedAt: number
+  error?: string
+  sessionId?: string
+  turnSnapshotId?: string
+  publishedAt?: number
+  failureNotifiedAt?: number
+  retryCount?: number
+  lastRetryAt?: number
+  warnings?: string[]
+  trigger?: {
+    eventName?: string
+    mode?: string
+    reason?: string
+    host?: string
+    projectId?: string | number
+    projectPath?: string
+    objectType?: string
+    objectIid?: string | number
+    commitSha?: string
+    headSha?: string
+    noteId?: string | number
+    [key: string]: unknown
+  }
+}
+
+export interface GitLabReviewRetryResult {
+  accepted: boolean
+  runId?: string
+  error?: string
+}
+
 export interface WebhookSourceInput {
   name: string
   enabled?: boolean
@@ -2321,6 +2358,31 @@ export async function importAuthFromOpencode(): Promise<AuthImportResult> {
     throw new Error(data.error || `Failed to import auth: ${res.status}`)
   }
   return res.json()
+}
+
+export const gitLabReviewApi = {
+  async runs(opts: { limit?: number } = {}): Promise<GitLabReviewRun[]> {
+    const params = new URLSearchParams()
+    if (opts.limit !== undefined) params.set('limit', String(opts.limit))
+    const suffix = params.toString() ? `?${params}` : ''
+    const res = await fetchWithTimeout(`${BASE_URL}/webhooks/gitlab/runs${suffix}`)
+    if (!res.ok) {
+      throw new Error(`Failed to list GitLab review runs: ${res.status}`)
+    }
+    const data = await res.json()
+    return Array.isArray(data.runs) ? data.runs : []
+  },
+
+  async retry(runId: string): Promise<GitLabReviewRetryResult> {
+    const res = await fetchWithTimeout(`${BASE_URL}/webhooks/gitlab/runs/${encodeURIComponent(runId)}/retry`, {
+      method: 'POST'
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      throw new Error(data.error || `Failed to retry GitLab review run: ${res.status}`)
+    }
+    return data
+  },
 }
 
 // === Question API ===

@@ -3,6 +3,7 @@ import {
   authApi,
   configApi,
   customProviderApi,
+  gitLabReviewApi,
   importAuthFromOpencode,
   mcpApi,
   nine1botConfigApi,
@@ -62,6 +63,45 @@ afterEach(() => {
 })
 
 describe('web config APIs', () => {
+  it('loads GitLab review runs from the dedicated webhook endpoint', async () => {
+    installFetchMock((url) => {
+      if (url === '/webhooks/gitlab/runs?limit=25') {
+        return jsonResponse({
+          runs: [{
+            id: 'review_1',
+            platform: 'gitlab',
+            status: 'succeeded',
+            createdAt: 1,
+            updatedAt: 2,
+            publishedAt: 3,
+            retryCount: 1,
+            lastRetryAt: 4,
+          }],
+        })
+      }
+      if (url === '/webhooks/gitlab/runs/review_1/retry') {
+        return jsonResponse({ accepted: true, runId: 'review_1' }, 202)
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    })
+
+    await expect(gitLabReviewApi.runs({ limit: 25 })).resolves.toEqual([{
+      id: 'review_1',
+      platform: 'gitlab',
+      status: 'succeeded',
+      createdAt: 1,
+      updatedAt: 2,
+      publishedAt: 3,
+      retryCount: 1,
+      lastRetryAt: 4,
+    }])
+    await expect(gitLabReviewApi.retry('review_1')).resolves.toEqual({ accepted: true, runId: 'review_1' })
+    expect(callSummary()).toEqual([
+      ['GET', '/webhooks/gitlab/runs?limit=25'],
+      ['POST', '/webhooks/gitlab/runs/review_1/retry'],
+    ])
+  })
+
   it('keeps MCP and skill operations on resource config endpoints', async () => {
     installFetchMock((url, init) => {
       const method = init?.method || 'GET'

@@ -1,0 +1,38 @@
+{
+  "object_kind": "note",
+  "event_type": "note",
+  "project": {
+    "id": 123,
+    "path_with_namespace": "nine1/nine1bot",
+    "web_url": "https://gitlab.example.com/nine1/nine1bot"
+  },
+  "object_attributes": {
+    "id": 777,
+    "note": "@Nine1bot review this merge request"
+  },
+  "merge_request": {
+    "iid": 10,
+    "last_commit": {
+      "id": "dry-run-head"
+    }
+  },
+  "review_changes": {
+    "diff_refs": {
+      "base_sha": "dry-run-base",
+      "start_sha": "dry-run-start",
+      "head_sha": "dry-run-head"
+    },
+    "changes": [
+      {
+        "old_path": "src/auth.ts",
+        "new_path": "src/auth.ts",
+        "diff": "@@ -1,3 +1,4 @@\n export function canReview(user) {\n+  if (!user) return false\n   return user.role === 'maintainer'\n }\n"
+      },
+      {
+        "old_path": "package-lock.json",
+        "new_path": "package-lock.json",
+        "diff": "@@ -1 +1 @@\n-{}\n+{}\n"
+      }
+    ]
+  }
+}

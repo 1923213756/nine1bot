@@ -6,11 +6,17 @@
   "exports": {
     ".": "./src/index.ts",
     "./browser": "./src/browser.ts",
-    "./runtime": "./src/runtime.ts"
+    "./runtime": "./src/runtime.ts",
+    "./review": "./src/review/index.ts"
   },
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "review:dry-run": "bun run scripts/review-dry-run.ts",
+    "review:dry-run:webhook": "bun run scripts/review-dry-run.ts --webhook fixtures/review/sample-webhook-mr-note.json",
+    "review:dry-run:runtime-output": "bun run scripts/review-dry-run.ts --webhook fixtures/review/sample-webhook-mr-note.json --runtime-output fixtures/review/sample-runtime-output.md",
+    "review:dry-run:invalid-runtime-output": "bun run scripts/review-dry-run.ts --webhook fixtures/review/sample-webhook-mr-note.json --runtime-output fixtures/review/sample-invalid-runtime-output.md",
+    "review:dry-run:subagents": "bun run scripts/review-dry-run.ts --webhook fixtures/review/sample-webhook-mr-note.json --subagent-outputs fixtures/review/sample-subagent-outputs.json"
   },
   "dependencies": {
     "@nine1bot/platform-protocol": "workspace:*"

@@ -10,6 +10,8 @@ export {
   gitlabPlatformContribution,
   gitlabPlatformDescriptor,
   normalizeGitLabPagePayload,
+  refreshLocalWebhookBaseUrl,
 } from './runtime'
 export type { GitLabPlatformAdapter } from './runtime'
+export * from './review'
 export type * from './types'

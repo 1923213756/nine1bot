@@ -1,0 +1,14 @@
+{
+  "overflow": true,
+  "diff_refs": {
+    "head_sha": "4444444444444444444444444444444444444444"
+  },
+  "changes": [
+    {
+      "old_path": "src/large.ts",
+      "new_path": "src/large.ts",
+      "diff": "",
+      "overflow": true
+    }
+  ]
+}

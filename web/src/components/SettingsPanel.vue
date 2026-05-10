@@ -18,6 +18,7 @@ const emit = defineEmits<{
 const {
   activeTab,
   modelProviders,
+  providers,
   currentProvider,
   currentModel,
   defaultProvider,
@@ -51,7 +52,7 @@ const {
   loadPlatformDetail,
   updatePlatform,
   refreshPlatformStatus,
-  executePlatformAction
+  executePlatformAction,
 } = useSettings()
 
 const { theme, toggleTheme } = useTheme()
@@ -160,17 +161,17 @@ function handleOverlayClick(e: MouseEvent) {
           </button>
           <button
             class="tab"
-            :class="{ active: activeTab === 'platforms' }"
-            @click="activeTab = 'platforms'"
-          >
-            多平台
-          </button>
-          <button
-            class="tab"
             :class="{ active: activeTab === 'profile' }"
             @click="activeTab = 'profile'"
           >
             个人
+          </button>
+          <button
+            class="tab"
+            :class="{ active: activeTab === 'platforms' }"
+            @click="activeTab = 'platforms'"
+          >
+            多平台
           </button>
         </div>
       </div>
@@ -236,6 +237,7 @@ function handleOverlayClick(e: MouseEvent) {
           :action-running="platformActionRunning"
           :error="platformError"
           :action-result="platformActionResult"
+          :providers="providers"
           @select="loadPlatformDetail"
           @update="updatePlatform"
           @refresh="refreshPlatformStatus"

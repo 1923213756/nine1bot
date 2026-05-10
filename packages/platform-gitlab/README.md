@@ -14,6 +14,14 @@ Nine1Bot Runtime core.
 - OpenCode / Nine1Bot Runtime core must only depend on the generic platform
   adapter registry, not this package directly.
 
+## Code Review Plugin
+
+See [GITLAB_CODE_REVIEW_PLUGIN_DESIGN.md](./GITLAB_CODE_REVIEW_PLUGIN_DESIGN.md)
+for the initial design of the `@Nine1bot` merge request review flow. The design
+keeps GitLab webhook parsing, MR context loading, review orchestration, and
+comment publishing inside this platform package while exposing only generic
+context/resource contributions to the controller and runtime.
+
 ## Adding Another Platform
 
 Use this package as the copyable example:

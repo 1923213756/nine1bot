@@ -27,6 +27,13 @@ export type AutomatedControllerResponse = {
   response: RuntimeControllerProtocol.MessageSendResponse
 }
 
+export type AutomatedRuntimeOutput = {
+  kind: "message" | "part"
+  sessionID: string
+  payload: unknown
+  text?: string
+}
+
 export type AutomatedControllerInput = {
   title: string
   directory: string
@@ -35,10 +42,12 @@ export type AutomatedControllerInput = {
   entry: RuntimeControllerProtocol.Entry
   clientCapabilities: RuntimeControllerProtocol.ClientCapabilities
   parts: RuntimeControllerProtocol.MessageSendRequest["parts"]
+  context?: RuntimeControllerProtocol.MessageSendRequest["context"]
   interactionPolicy: AutomatedInteractionPolicy
   timeoutMs: number
   timeoutMessage?: string
   onControllerResponse?: (response: AutomatedControllerResponse) => Promise<void>
+  onRuntimeOutput?: (output: AutomatedRuntimeOutput) => Promise<void>
   onFinished?: (result: { status: AutomatedRunStatus; error?: string }) => Promise<void>
   onInteraction?: (interaction: {
     kind: "permission" | "question"
@@ -65,6 +74,7 @@ export async function runAutomatedControllerSession(input: AutomatedControllerIn
       })
       const messageResponse = await sendControllerMessage(sessionResponse.sessionId, {
         parts: input.parts,
+        context: input.context,
         entry: input.entry,
         clientCapabilities: input.clientCapabilities,
       })
@@ -91,6 +101,7 @@ export async function runAutomatedControllerSession(input: AutomatedControllerIn
         timeoutMs: input.timeoutMs,
         timeoutMessage: input.timeoutMessage,
         interactionPolicy: input.interactionPolicy,
+        onRuntimeOutput: input.onRuntimeOutput,
         onFinished: input.onFinished,
         onInteraction: input.onInteraction,
       })
@@ -106,6 +117,7 @@ export function startAutomatedRunMonitor(input: {
   timeoutMessage?: string
   interactionPolicy: AutomatedInteractionPolicy
   onFinished?: (result: { status: AutomatedRunStatus; error?: string }) => Promise<void>
+  onRuntimeOutput?: AutomatedControllerInput["onRuntimeOutput"]
   onInteraction?: AutomatedControllerInput["onInteraction"]
 }) {
   let finished = false
@@ -122,7 +134,8 @@ export function startAutomatedRunMonitor(input: {
 
   unsubscribe = Bus.subscribeAll(async (event) => {
     const properties = event.properties as Record<string, any> | undefined
-    const eventSessionID = properties?.sessionID || properties?.info?.id
+    const eventSessionID =
+      properties?.sessionID || properties?.info?.sessionID || properties?.part?.sessionID || properties?.info?.id
     if (eventSessionID !== input.sessionID) return
 
     if (event.type === "permission.asked") {
@@ -161,6 +174,27 @@ export function startAutomatedRunMonitor(input: {
       return
     }
 
+    if (event.type === "message.updated") {
+      const info = properties?.info
+      await input.onRuntimeOutput?.({
+        kind: "message",
+        sessionID: input.sessionID,
+        payload: info,
+      }).catch(() => undefined)
+      return
+    }
+
+    if (event.type === "message.part.updated") {
+      const part = properties?.part
+      await input.onRuntimeOutput?.({
+        kind: "part",
+        sessionID: input.sessionID,
+        payload: part,
+        text: extractTextPart(part),
+      }).catch(() => undefined)
+      return
+    }
+
     if (event.type === "session.idle") {
       await finish("succeeded")
       return
@@ -190,4 +224,10 @@ function formatSessionError(error: unknown) {
   if (error instanceof Error) return error.message
   if (typeof error === "string") return error
   return JSON.stringify(error)
+}
+
+function extractTextPart(part: unknown) {
+  if (!part || typeof part !== "object") return undefined
+  const record = part as Record<string, unknown>
+  return record.type === "text" && typeof record.text === "string" ? record.text : undefined
 }
