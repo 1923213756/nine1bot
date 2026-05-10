@@ -45,12 +45,20 @@ export namespace Session {
     ).test(title)
   }
 
+  export const Client = z.object({
+    source: z.enum(["web", "browser-extension", "feishu", "api", "webhook", "schedule"]).optional(),
+    mode: z.string().optional(),
+    platform: z.string().optional(),
+  })
+  export type Client = z.output<typeof Client>
+
   export const Info = z
     .object({
       id: Identifier.schema("session"),
       slug: z.string(),
       projectID: z.string(),
       directory: z.string(),
+      client: Client.optional(),
       parentID: Identifier.schema("session").optional(),
       summary: z
         .object({
@@ -239,6 +247,7 @@ export namespace Session {
     runtimeProfile?: SessionProfileSnapshot
     runtimeCurrentModel?: SessionRuntimeProfile.CurrentModel
     runtimeAgentName?: string
+    client?: Client
   }) {
     const result: Info = {
       id: Identifier.descending("session", input.id),
@@ -254,6 +263,7 @@ export namespace Session {
         updated: Date.now(),
       },
     }
+    if (input.client) result.client = input.client
     if (await RuntimeFeatureFlags.profileSnapshotEnabled()) {
       const profile =
         input.runtimeProfile ??

@@ -9,17 +9,26 @@
  */
 
 import { toolExecutors } from '../tools'
+import {
+  DEFAULT_SERVER_ORIGIN,
+  SERVER_ORIGIN_STORAGE_KEY,
+  readStoredServerOrigin,
+  serverOriginToRelayUrl,
+  normalizeServerOrigin,
+} from '../shared/server-config'
 import { isAbortError } from '../tools/execution-context'
 import { setupDiagnosticsListeners } from './diagnostics-buffer'
 import {
   addTabToNine1Group,
+  getDefaultNine1Tab,
+  getTabsInActiveNine1Group,
   getTabsInGroupByTab,
+  isTabInActiveNine1Group,
   setNine1GroupActive,
   setNine1GroupIdle,
   setupTabGroupCleanup,
 } from './tab-group-manager'
 
-const DEFAULT_SERVER_ORIGIN = 'http://127.0.0.1:4096'
 const EXTENSION_PROTOCOL_VERSION = '2026-03-15'
 
 const RECONNECT_BASE_INTERVAL = 5000
@@ -30,62 +39,6 @@ const DEFAULT_TOOL_TIMEOUT_MS = 30000
 
 let configuredServerOrigin = DEFAULT_SERVER_ORIGIN
 let pairedInstanceId: string | null = null
-
-function normalizeServerOrigin(serverOrigin: string): string {
-  try {
-    const parsed = new URL(serverOrigin)
-    return `${parsed.protocol}//${parsed.host}`
-  } catch {
-    return DEFAULT_SERVER_ORIGIN
-  }
-}
-
-function serverOriginToRelayUrl(serverOrigin: string): string {
-  const parsed = new URL(serverOrigin)
-  const protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${parsed.host}/browser/extension`
-}
-
-function relayUrlToServerOrigin(relayUrl: string): string {
-  try {
-    const parsed = new URL(relayUrl)
-    const protocol = parsed.protocol === 'wss:' ? 'https:' : 'http:'
-    return `${protocol}//${parsed.host}`
-  } catch {
-    return DEFAULT_SERVER_ORIGIN
-  }
-}
-
-async function migrateLegacyServerConfig(): Promise<string> {
-  try {
-    const stored = await chrome.storage.sync.get({
-      serverOrigin: '',
-      relayUrl: '',
-      webUiUrl: '',
-    })
-
-    const fromServerOrigin = typeof stored.serverOrigin === 'string' && stored.serverOrigin.trim()
-      ? normalizeServerOrigin(stored.serverOrigin)
-      : ''
-    const fromWebUi = typeof stored.webUiUrl === 'string' && stored.webUiUrl.trim()
-      ? normalizeServerOrigin(stored.webUiUrl)
-      : ''
-    const fromRelay = typeof stored.relayUrl === 'string' && stored.relayUrl.trim()
-      ? relayUrlToServerOrigin(stored.relayUrl)
-      : ''
-
-    const serverOrigin = fromServerOrigin || fromWebUi || fromRelay || DEFAULT_SERVER_ORIGIN
-
-    if (serverOrigin !== stored.serverOrigin || stored.relayUrl || stored.webUiUrl) {
-      await chrome.storage.sync.set({ serverOrigin })
-      await chrome.storage.sync.remove(['relayUrl', 'webUiUrl'])
-    }
-
-    return serverOrigin
-  } catch {
-    return DEFAULT_SERVER_ORIGIN
-  }
-}
 
 async function fetchBootstrap(serverOrigin: string): Promise<{ serverOrigin?: string; instanceId?: string } | null> {
   try {
@@ -98,13 +51,13 @@ async function fetchBootstrap(serverOrigin: string): Promise<{ serverOrigin?: st
 }
 
 async function getConfiguredRelayUrl(): Promise<string> {
-  const storedServerOrigin = await migrateLegacyServerConfig()
+  const storedServerOrigin = await readStoredServerOrigin().catch(() => DEFAULT_SERVER_ORIGIN)
   const bootstrap = await fetchBootstrap(storedServerOrigin)
   configuredServerOrigin = normalizeServerOrigin(bootstrap?.serverOrigin ?? storedServerOrigin)
   pairedInstanceId = typeof bootstrap?.instanceId === 'string' ? bootstrap.instanceId : null
 
   try {
-    await chrome.storage.sync.set({ serverOrigin: configuredServerOrigin })
+    await chrome.storage.sync.set({ [SERVER_ORIGIN_STORAGE_KEY]: configuredServerOrigin })
   } catch {
     // ignore storage sync failures
   }
@@ -136,6 +89,7 @@ let lastPongAt = 0
 
 // 当前活动的标签页 session
 const activeSessions = new Map<number, string>() // tabId -> sessionId
+const attachedTabs = new Set<number>()
 
 // 命令状态
 const runningCommands = new Map<number, RunningCommand>()
@@ -168,6 +122,67 @@ function forwardCdpEvent(method: string, params?: unknown, sessionId?: string): 
     method: 'forwardCDPEvent',
     params: { method, params, sessionId },
   })
+}
+
+function isAutomatableTabUrl(url?: string): boolean {
+  if (!url) return false
+  try {
+    const parsed = new URL(url)
+    return ['http:', 'https:', 'file:'].includes(parsed.protocol)
+  } catch {
+    return false
+  }
+}
+
+function targetInfoForTab(tab: chrome.tabs.Tab) {
+  return {
+    targetId: String(tab.id),
+    type: 'page',
+    title: tab.title || '',
+    url: tab.url || '',
+    attached: true,
+  }
+}
+
+function detachManagedTarget(tabId: number, reason = 'target_detached'): void {
+  const sessionId = activeSessions.get(tabId)
+  if (!sessionId) return
+
+  forwardCdpEvent('Target.detachedFromTarget', {
+    sessionId,
+    targetId: String(tabId),
+  })
+  activeSessions.delete(tabId)
+  attachedTabs.delete(tabId)
+  cancelRunningCommands({ tabId, reason })
+  tabActiveCommandCount.delete(tabId)
+  tabStopRequestedAt.delete(tabId)
+}
+
+function detachAllActiveSessions(): void {
+  for (const tabId of Array.from(activeSessions.keys())) {
+    detachManagedTarget(tabId, 'tab_group_changed')
+  }
+}
+
+async function attachManagedTarget(tab: chrome.tabs.Tab): Promise<string | null> {
+  if (!tab.id) return null
+  if (!isAutomatableTabUrl(tab.url)) return null
+  if (!await isTabInActiveNine1Group(tab.id)) return null
+
+  const existing = activeSessions.get(tab.id)
+  if (existing) return existing
+
+  const sessionId = generateSessionId()
+  activeSessions.set(tab.id, sessionId)
+
+  forwardCdpEvent('Target.attachedToTarget', {
+    sessionId,
+    targetInfo: targetInfoForTab(tab),
+    waitingForDebugger: false,
+  })
+
+  return sessionId
 }
 
 function sendExtensionHello(): void {
@@ -405,6 +420,38 @@ async function executeExtensionToolCommand(options: {
   }
 }
 
+async function resolveManagedCommandTab(sessionId?: string, targetId?: string): Promise<number> {
+  if (sessionId) {
+    for (const [tid, sid] of activeSessions) {
+      if (sid === sessionId) {
+        if (!await isTabInActiveNine1Group(tid)) {
+          throw new Error(`Browser session is outside the active Nine1Bot tab group: ${sessionId}`)
+        }
+        return tid
+      }
+    }
+    throw new Error(`Browser session not found in active Nine1Bot tab group: ${sessionId}`)
+  }
+
+  if (typeof targetId === 'string' && /^\d+$/.test(targetId)) {
+    const tabId = Number(targetId)
+    if (!await isTabInActiveNine1Group(tabId)) {
+      throw new Error(`Browser target is outside the active Nine1Bot tab group: ${targetId}`)
+    }
+    return tabId
+  }
+
+  const tab = await getDefaultNine1Tab()
+  if (!tab?.id) {
+    throw new Error('No active Nine1Bot tab group. Open the Nine1Bot side panel from the extension icon first.')
+  }
+  if (!isAutomatableTabUrl(tab.url)) {
+    throw new Error('The active Nine1Bot tab group does not contain an automatable http/https/file tab.')
+  }
+  await attachManagedTarget(tab)
+  return tab.id
+}
+
 /**
  * 处理来自 Relay Server 的消息
  */
@@ -458,26 +505,7 @@ async function handleRelayMessage(data: string): Promise<void> {
 async function handleCdpCommand(commandId: number, method: string, params: any, sessionId?: string, targetId?: string): Promise<unknown> {
   console.log('[Relay Client] Handling CDP command:', method, 'sessionId:', sessionId)
 
-  // 获取 tabId：明确指定 sessionId 时必须命中，避免误操作当前活动标签。
-  let tabId: number | undefined
-
-  if (sessionId) {
-    // 从 session 映射中查找 tabId
-    for (const [tid, sid] of activeSessions) {
-      if (sid === sessionId) {
-        tabId = tid
-        break
-      }
-    }
-    if (!tabId) {
-      throw new Error(`Browser session not found: ${sessionId}`)
-    }
-  } else if (typeof targetId === 'string' && /^\d+$/.test(targetId)) {
-    tabId = Number(targetId)
-  } else {
-    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true })
-    tabId = activeTab?.id
-  }
+  const tabId = await resolveManagedCommandTab(sessionId, targetId)
 
   // 根据 CDP method 调用相应的工具
   switch (method) {
@@ -648,9 +676,6 @@ async function handleCdpCommand(commandId: number, method: string, params: any, 
   }
 }
 
-// Debugger 管理
-const attachedTabs = new Set<number>()
-
 async function ensureDebuggerAttached(tabId: number): Promise<void> {
   if (attachedTabs.has(tabId)) return
 
@@ -671,105 +696,75 @@ async function ensureDebuggerAttached(tabId: number): Promise<void> {
 function setupTabListeners(): void {
   // 新标签页创建
   chrome.tabs.onCreated.addListener((tab) => {
-    if (tab.id && tab.url !== 'chrome://newtab/') {
-      const sessionId = generateSessionId()
-      activeSessions.set(tab.id, sessionId)
-
-      forwardCdpEvent('Target.attachedToTarget', {
-        sessionId,
-        targetInfo: {
-          targetId: String(tab.id),
-          type: 'page',
-          title: tab.title || '',
-          url: tab.url || '',
-          attached: true,
-        },
-        waitingForDebugger: false,
-      })
-    }
+    if (!tab.id) return
+    setTimeout(() => {
+      chrome.tabs.get(tab.id!).then((freshTab) => attachManagedTarget(freshTab)).catch(() => {})
+    }, 150)
   })
 
   // 标签页更新（URL/标题变化）
-  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    const sessionId = activeSessions.get(tabId)
-    if (!sessionId) return
+  chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    if (changeInfo.groupId !== undefined) {
+      if (activeSessions.has(tabId) && !await isTabInActiveNine1Group(tabId)) {
+        detachManagedTarget(tabId, 'tab_left_nine1_group')
+        return
+      }
+      await attachManagedTarget(tab).catch(() => {})
+    }
 
     if (changeInfo.url || changeInfo.title) {
+      if (!await isTabInActiveNine1Group(tabId)) {
+        detachManagedTarget(tabId, 'tab_left_nine1_group')
+        return
+      }
+      const sessionId = activeSessions.get(tabId)
+      if (!sessionId) {
+        await attachManagedTarget(tab).catch(() => {})
+        return
+      }
       forwardCdpEvent('Target.targetInfoChanged', {
-        targetInfo: {
-          targetId: String(tabId),
-          type: 'page',
-          title: tab.title || '',
-          url: tab.url || '',
-          attached: true,
-        },
+        targetInfo: targetInfoForTab(tab),
       })
     }
   })
 
   // 标签页关闭
   chrome.tabs.onRemoved.addListener((tabId) => {
-    const sessionId = activeSessions.get(tabId)
-    if (sessionId) {
-      forwardCdpEvent('Target.detachedFromTarget', {
-        sessionId,
-        targetId: String(tabId),
-      })
-      activeSessions.delete(tabId)
-      attachedTabs.delete(tabId)
-      cancelRunningCommands({ tabId, reason: 'tab_removed' })
-      tabActiveCommandCount.delete(tabId)
-    }
+    detachManagedTarget(tabId, 'tab_removed')
   })
 
   // 标签页激活
   chrome.tabs.onActivated.addListener(async (activeInfo) => {
     const tab = await chrome.tabs.get(activeInfo.tabId)
-    let sessionId = activeSessions.get(activeInfo.tabId)
-
-    if (!sessionId) {
-      sessionId = generateSessionId()
-      activeSessions.set(activeInfo.tabId, sessionId)
-
-      forwardCdpEvent('Target.attachedToTarget', {
-        sessionId,
-        targetInfo: {
-          targetId: String(activeInfo.tabId),
-          type: 'page',
-          title: tab.title || '',
-          url: tab.url || '',
-          attached: true,
-        },
-        waitingForDebugger: false,
-      })
-    }
+    await attachManagedTarget(tab)
   })
 }
 
 /**
- * 发送当前所有标签页信息
+ * 发送当前 Nine1Bot 标签组信息
  */
 async function sendInitialTargets(): Promise<void> {
-  const tabs = await chrome.tabs.query({})
-
+  const tabs = await getTabsInActiveNine1Group()
   for (const tab of tabs) {
-    if (!tab.id || tab.url?.startsWith('chrome://')) continue
-
-    const sessionId = generateSessionId()
-    activeSessions.set(tab.id, sessionId)
-
-    forwardCdpEvent('Target.attachedToTarget', {
-      sessionId,
-      targetInfo: {
-        targetId: String(tab.id),
-        type: 'page',
-        title: tab.title || '',
-        url: tab.url || '',
-        attached: true,
-      },
-      waitingForDebugger: false,
-    })
+    await attachManagedTarget(tab)
   }
+}
+
+export async function activateDedicatedNine1TabGroup(windowId?: number): Promise<{ groupId: number | null; tabId?: number }> {
+  const [activeTab] = await chrome.tabs.query({
+    active: true,
+    currentWindow: windowId === undefined,
+    ...(windowId !== undefined ? { windowId } : {}),
+  })
+
+  if (!activeTab?.id) {
+    return { groupId: null }
+  }
+
+  const groupId = await addTabToNine1Group(activeTab.id)
+  detachAllActiveSessions()
+  await sendInitialTargets()
+  return { groupId, tabId: activeTab.id }
 }
 
 function setupRuntimeListeners(): void {
@@ -792,6 +787,25 @@ function setupRuntimeListeners(): void {
 
     sendResponse({ ok: true, cancelled, tabId: requestedTabId })
     return true
+  })
+}
+
+function setupServerConfigListener(): void {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'sync') return
+    if (!changes[SERVER_ORIGIN_STORAGE_KEY]) return
+
+    const nextValue = changes[SERVER_ORIGIN_STORAGE_KEY].newValue
+    if (typeof nextValue !== 'string' || !nextValue.trim()) return
+
+    const nextOrigin = normalizeServerOrigin(nextValue)
+    if (nextOrigin === configuredServerOrigin && isRelayConnected()) return
+
+    console.log('[Relay Client] Server origin changed, reconnecting to:', nextOrigin)
+    disconnectFromRelay()
+    configuredServerOrigin = nextOrigin
+    pairedInstanceId = null
+    connectToRelay()
   })
 }
 
@@ -936,6 +950,7 @@ export function initRelayClient(): void {
 
   setupTabListeners()
   setupRuntimeListeners()
+  setupServerConfigListener()
   setupDiagnosticsListeners()
   setupTabGroupCleanup()
   console.log('[Relay Client] Tab/runtime listeners set up')

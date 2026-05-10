@@ -6,6 +6,9 @@ import {
 import type { RequestPagePayload } from './page-context'
 
 const BASE_URL = ''  // 使用相对路径，由 vite proxy 或同源处理
+export type ClientSurface = 'web' | 'browser-extension'
+
+let clientSurface: ClientSurface = 'web'
 
 // 默认请求超时时间 (30秒)
 const DEFAULT_TIMEOUT = 30000
@@ -13,6 +16,22 @@ let activeDirectory = ''
 
 export function setApiDirectory(directory?: string) {
   activeDirectory = (directory || '').trim()
+}
+
+export function setApiClientSurface(surface: ClientSurface) {
+  clientSurface = surface
+}
+
+export function getApiClientSurface(): ClientSurface {
+  return clientSurface
+}
+
+export function sessionMatchesClientSurface(session: Pick<Session, 'client'>, surface: ClientSurface = clientSurface): boolean {
+  const source = session.client?.source
+  if (surface === 'browser-extension') {
+    return source === 'browser-extension'
+  }
+  return true
 }
 
 function applyDirectoryToUrl(url: string): string {
@@ -72,6 +91,15 @@ function webClientCapabilities(page?: RequestPagePayload) {
 }
 
 function controllerEntry(page?: RequestPagePayload) {
+  if (clientSurface === 'browser-extension') {
+    const entry: { source: 'browser-extension'; platform?: string; mode: string } = {
+      source: 'browser-extension',
+      mode: 'browser-sidepanel',
+    }
+    if (page?.platform) entry.platform = page.platform
+    return entry
+  }
+
   if (!page) {
     return {
       source: 'web',
@@ -131,6 +159,7 @@ export interface Session {
   slug?: string
   title: string
   directory: string
+  client?: SessionClient
   projectID?: string
   parentID?: string
   runtime?: SessionRuntimeSummary
@@ -141,6 +170,12 @@ export interface Session {
   }
   // Computed field for display
   createdAt?: string
+}
+
+export interface SessionClient {
+  source?: 'web' | 'browser-extension' | 'feishu' | 'api' | 'webhook' | 'schedule'
+  mode?: string
+  platform?: string
 }
 
 export interface SessionRuntimeSummary {
@@ -825,7 +860,9 @@ export const api = {
     const data = await res.json()
     const sessions = Array.isArray(data) ? data : (data.data || [])
     // 添加 createdAt 字段用于显示
-    return sessions.map((s: Session) => normalizeSession(s))
+    return sessions
+      .map((s: Session) => normalizeSession(s))
+      .filter((session: Session) => sessionMatchesClientSurface(session))
   },
 
   // 创建会话
@@ -1431,7 +1468,9 @@ export const projectApi = {
       throw new Error(`Failed to list project sessions: ${res.status}`)
     }
     const sessions = await res.json()
-    return (sessions || []).map((s: Session) => normalizeSession(s))
+    return (sessions || [])
+      .map((s: Session) => normalizeSession(s))
+      .filter((session: Session) => sessionMatchesClientSurface(session))
   },
 
   async getEnvironment(projectID: string): Promise<ProjectEnvironmentResponse> {
@@ -1834,6 +1873,13 @@ export interface CustomProvider {
   }
 }
 
+export interface BrowserExtensionConfig {
+  model?: { providerID: string; modelID: string }
+  prompt?: string
+  mcpServers?: string[]
+  skills?: string[]
+}
+
 // === Platform Adapter Types ===
 export type PlatformRuntimeStatusValue =
   | 'available'
@@ -2199,6 +2245,30 @@ export const nine1botConfigApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(config)
     })
+  },
+  async getBrowserExtension(): Promise<BrowserExtensionConfig> {
+    const res = await fetchWithTimeout(`${BASE_URL}/config/nine1bot/browser-extension`)
+    if (!res.ok) {
+      throw new Error(`Failed to load browser extension config: ${res.status}`)
+    }
+    return res.json()
+  },
+  async updateBrowserExtension(config: {
+    model?: { providerID: string; modelID: string } | null
+    prompt?: string | null
+    mcpServers?: string[] | null
+    skills?: string[] | null
+  }): Promise<BrowserExtensionConfig> {
+    const res = await fetchWithTimeout(`${BASE_URL}/config/nine1bot/browser-extension`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config)
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data.error || `Failed to update browser extension config: ${res.status}`)
+    }
+    return res.json()
   }
 }
 
