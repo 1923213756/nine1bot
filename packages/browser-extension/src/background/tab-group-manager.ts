@@ -12,6 +12,7 @@ import {
 const NINE1_TAB_GROUP_COLOR: chrome.tabGroups.ColorEnum = 'blue'
 
 let cleanupInstalled = false
+let bindingsSyncInstalled = false
 let bindingsLoaded = false
 const activeNine1Groups = new Map<number, ActiveNine1TabGroupBinding>()
 const lastResolutionByWindow = new Map<number, TabGroupResolution>()
@@ -63,6 +64,13 @@ function bindingToStorageRecord(): ActiveNine1TabGroupBindings {
 function setLastResolution(resolution: TabGroupResolution): void {
   if (typeof resolution.windowId === 'number') {
     lastResolutionByWindow.set(resolution.windowId, resolution)
+  }
+}
+
+function replaceBindings(nextBindings: ActiveNine1TabGroupBindings): void {
+  activeNine1Groups.clear()
+  for (const binding of Object.values(nextBindings)) {
+    activeNine1Groups.set(binding.windowId, binding)
   }
 }
 
@@ -151,6 +159,38 @@ async function persistBindings(): Promise<void> {
   }
 }
 
+function installBindingsSyncListener(): void {
+  if (bindingsSyncInstalled) return
+  bindingsSyncInstalled = true
+
+  chrome.storage.onChanged?.addListener((changes, areaName) => {
+    if (areaName !== 'local') return
+
+    const bindingsChange = changes[ACTIVE_NINE1_TAB_GROUPS_STORAGE_KEY]
+    if (bindingsChange) {
+      replaceBindings(normalizeStoredBindings(bindingsChange.newValue))
+      return
+    }
+
+    const legacyChange = changes[ACTIVE_NINE1_TAB_GROUP_STORAGE_KEY]
+    if (!legacyChange) return
+
+    const nextLegacyValue = legacyChange.newValue
+    if (typeof nextLegacyValue !== 'number' || nextLegacyValue < 0) return
+
+    getGroupWindowId(nextLegacyValue).then((windowId) => {
+      if (windowId === null) return
+      activeNine1Groups.set(windowId, {
+        groupId: nextLegacyValue,
+        windowId,
+        updatedAt: Date.now(),
+      })
+    }).catch((error) => {
+      recordError('legacy_binding_sync_failed', error)
+    })
+  })
+}
+
 function setBinding(binding: ActiveNine1TabGroupBinding | null): void {
   if (!binding) return
   activeNine1Groups.set(binding.windowId, binding)
@@ -205,6 +245,7 @@ function normalizeStoredBindings(value: unknown): ActiveNine1TabGroupBindings {
 async function loadBindings(): Promise<void> {
   if (bindingsLoaded) return
   bindingsLoaded = true
+  installBindingsSyncListener()
 
   try {
     const stored = await chrome.storage.local.get({
@@ -213,9 +254,7 @@ async function loadBindings(): Promise<void> {
     })
 
     const nextBindings = normalizeStoredBindings(stored[ACTIVE_NINE1_TAB_GROUPS_STORAGE_KEY])
-    for (const binding of Object.values(nextBindings)) {
-      activeNine1Groups.set(binding.windowId, binding)
-    }
+    replaceBindings(nextBindings)
 
     if (activeNine1Groups.size > 0) return
 
@@ -234,6 +273,18 @@ async function loadBindings(): Promise<void> {
     await persistBindings()
   } catch (error) {
     recordError('load_bindings_failed', error)
+  }
+}
+
+export async function refreshBindingsFromStorage(): Promise<void> {
+  try {
+    installBindingsSyncListener()
+    const stored = await chrome.storage.local.get({
+      [ACTIVE_NINE1_TAB_GROUPS_STORAGE_KEY]: {},
+    })
+    replaceBindings(normalizeStoredBindings(stored[ACTIVE_NINE1_TAB_GROUPS_STORAGE_KEY]))
+  } catch (error) {
+    recordError('refresh_bindings_from_storage_failed', error)
   }
 }
 
@@ -332,7 +383,10 @@ async function resolveActiveGroup(options: ResolveGroupOptions = {}): Promise<Ta
   }
 
   const storedBinding = activeNine1Groups.get(effectiveWindowId) ?? null
-  if (storedBinding && await groupExists(storedBinding.groupId)) {
+  const storedBindingWindowId = storedBinding
+    ? await getGroupWindowId(storedBinding.groupId)
+    : null
+  if (storedBinding && storedBindingWindowId === effectiveWindowId) {
     const resolution: TabGroupResolution = {
       windowId: effectiveWindowId,
       groupId: storedBinding.groupId,

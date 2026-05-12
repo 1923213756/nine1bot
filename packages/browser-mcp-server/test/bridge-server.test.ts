@@ -144,4 +144,37 @@ describe('BridgeServer form fill', () => {
     expect(issueCodes).toContain('tab_scan_failed')
     expect(issueCodes).toContain('relay_cache_fallback')
   })
+
+  test('surfaces extension tool errors from authoritative tab scans', async () => {
+    const bridge = new BridgeServer()
+    const bridgeWithRelay = bridge as any
+
+    bridgeWithRelay.relay = {
+      extensionConnected: () => true,
+      getTools: () => ['tabs_context_mcp'],
+      getTargets: () => [],
+      upsertTargetsFromTabs: () => [],
+      sendCommand: async () => ({
+        isError: true,
+        content: [{
+          type: 'text',
+          text: 'Error getting tabs context: no active group',
+        }],
+      }),
+      getHealth: () => null,
+      getDiagnostics: () => null,
+      getHelloAt: () => null,
+      getHello: () => null,
+      getAgentStates: () => [],
+    }
+
+    const status = await bridge.getStatus()
+
+    expect(status.user?.tabs).toEqual([])
+    expect(status.runtime?.issues).toContainEqual({
+      code: 'tab_scan_failed',
+      severity: 'error',
+      message: 'Extension tab scan failed: Error getting tabs context: no active group',
+    })
+  })
 })

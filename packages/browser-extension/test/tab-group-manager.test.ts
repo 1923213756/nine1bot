@@ -8,6 +8,7 @@ import {
   __resetTabGroupManagerStateForTests,
   getActiveNine1GroupId,
   getTabGroupDiagnostics,
+  refreshBindingsFromStorage,
 } from '../src/background/tab-group-manager'
 
 interface MockTab {
@@ -32,11 +33,13 @@ const state: {
   groups: Map<number, MockGroup>
   storage: Record<string, unknown>
   currentWindowId: number
+  storageListeners: Array<(changes: Record<string, { oldValue?: unknown; newValue?: unknown }>, areaName: string) => void>
 } = {
   tabs: new Map(),
   groups: new Map(),
   storage: {},
   currentWindowId: 1,
+  storageListeners: [],
 }
 
 function resetChromeState(): void {
@@ -44,6 +47,7 @@ function resetChromeState(): void {
   state.groups.clear()
   state.storage = {}
   state.currentWindowId = 1
+  state.storageListeners = []
   __resetTabGroupManagerStateForTests()
 }
 
@@ -68,13 +72,31 @@ beforeEach(() => {
           }
         },
         async set(values: Record<string, unknown>) {
+          const changes = Object.fromEntries(
+            Object.entries(values).map(([key, newValue]) => [
+              key,
+              { oldValue: state.storage[key], newValue },
+            ]),
+          )
           state.storage = {
             ...state.storage,
             ...values,
           }
+          for (const listener of state.storageListeners) {
+            listener(changes, 'local')
+          }
         },
         async remove(key: string) {
+          const oldValue = state.storage[key]
           delete state.storage[key]
+          for (const listener of state.storageListeners) {
+            listener({ [key]: { oldValue, newValue: undefined } }, 'local')
+          }
+        },
+      },
+      onChanged: {
+        addListener(listener: (changes: Record<string, { oldValue?: unknown; newValue?: unknown }>, areaName: string) => void) {
+          state.storageListeners.push(listener)
         },
       },
     },
@@ -175,6 +197,26 @@ describe('tab group manager recovery', () => {
     expect(diagnostics.lastResolutionByWindow['1']?.recoverySource).toBe('active-tab-match')
   })
 
+  test('rejects stored bindings when the group moved to another window', async () => {
+    setGroups([
+      { id: 12, windowId: 2, title: `${NINE1_TAB_GROUP_TITLE_PREFIX}: moved` },
+      { id: 13, windowId: 1, title: `${NINE1_TAB_GROUP_TITLE_PREFIX}: local` },
+    ])
+    setTabs([
+      { id: 6, windowId: 1, groupId: 13, active: true },
+      { id: 7, windowId: 2, groupId: 12, active: false },
+    ])
+    state.storage[ACTIVE_NINE1_TAB_GROUPS_STORAGE_KEY] = {
+      '1': { groupId: 12, windowId: 1, updatedAt: 1 },
+    }
+
+    await expect(getActiveNine1GroupId(1)).resolves.toBe(13)
+
+    const diagnostics = await getTabGroupDiagnostics(1)
+    expect(diagnostics.lastResolutionByWindow['1']?.recoverySource).toBe('active-tab-match')
+    expect(diagnostics.bindings['1']?.groupId).toBe(13)
+  })
+
   test('prefers the active tab group when multiple matching groups exist', async () => {
     setGroups([
       { id: 21, windowId: 1, title: `${NINE1_TAB_GROUP_TITLE_PREFIX}: first` },
@@ -203,5 +245,30 @@ describe('tab group manager recovery', () => {
     const diagnostics = await getTabGroupDiagnostics(5)
     expect(diagnostics.bindings['5']?.groupId).toBe(30)
     expect(state.storage[ACTIVE_NINE1_TAB_GROUP_STORAGE_KEY]).toBeUndefined()
+  })
+
+  test('refreshes cached bindings when another extension context updates storage', async () => {
+    setGroups([
+      { id: 40, windowId: 1, title: `${NINE1_TAB_GROUP_TITLE_PREFIX}: first` },
+      { id: 41, windowId: 1, title: `${NINE1_TAB_GROUP_TITLE_PREFIX}: second` },
+    ])
+    setTabs([
+      { id: 8, windowId: 1, groupId: 40, active: true },
+      { id: 9, windowId: 1, groupId: 41, active: false },
+    ])
+    state.storage[ACTIVE_NINE1_TAB_GROUPS_STORAGE_KEY] = {
+      '1': { groupId: 40, windowId: 1, updatedAt: 1 },
+    }
+
+    await expect(getActiveNine1GroupId(1)).resolves.toBe(40)
+
+    await (globalThis.chrome as typeof chrome).storage.local.set({
+      [ACTIVE_NINE1_TAB_GROUPS_STORAGE_KEY]: {
+        '1': { groupId: 41, windowId: 1, updatedAt: 2 },
+      },
+    })
+
+    await refreshBindingsFromStorage()
+    await expect(getActiveNine1GroupId(1)).resolves.toBe(41)
   })
 })

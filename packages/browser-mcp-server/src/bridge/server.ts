@@ -301,6 +301,34 @@ export class BridgeServer {
         },
       ) as ExtensionToolResult
       const text = result.content?.find(c => c.type === 'text')?.text ?? '{}'
+      if (result.isError) {
+        return {
+          tabs: [],
+          source: 'none',
+          issues: [
+            {
+              code: 'tab_scan_failed',
+              severity: 'error',
+              message: `Extension tab scan failed: ${text}`,
+            },
+          ],
+        }
+      }
+
+      if (!text.trim().startsWith('{')) {
+        return {
+          tabs: [],
+          source: 'none',
+          issues: [
+            {
+              code: 'tab_scan_failed',
+              severity: 'error',
+              message: `Extension tab scan returned a non-JSON payload: ${text}`,
+            },
+          ],
+        }
+      }
+
       const parsed = JSON.parse(text) as {
         allTabs?: Array<{ id?: number; title?: string; url?: string; active?: boolean; windowId?: number }>
         activeTab?: { id?: number; title?: string; url?: string; windowId?: number } | null

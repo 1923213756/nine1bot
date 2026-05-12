@@ -207,6 +207,18 @@ function upsertConnectedTarget(target: ConnectedTarget, broadcast = true): Conne
   return target
 }
 
+function detachConnectedTarget(sessionId: string, targetId: string): void {
+  connectedTargets.delete(sessionId)
+  broadcastToCdpClients({
+    method: 'Target.detachedFromTarget',
+    params: {
+      sessionId,
+      targetId,
+    },
+    sessionId,
+  })
+}
+
 async function routeCdpCommand(cmd: { id: number; method: string; params?: unknown; sessionId?: string }): Promise<unknown> {
   switch (cmd.method) {
     case 'Browser.getVersion':
@@ -589,6 +601,24 @@ export function getExtensionRelay(): ExtensionRelay {
     getHello: () => (extensionHello ? { ...extensionHello } : null),
     getAgentStates: () => Array.from(extensionAgentStates.values()).map((state) => ({ ...state })),
     upsertTargetsFromTabs: (tabs: Tab[]) => {
+      const desiredSessionIds = new Set<string>()
+      const desiredSessionIdByTargetId = new Map<string, string>()
+
+      for (const tab of tabs) {
+        const targetId = String(tab.id)
+        const sessionId = tab.sessionId ?? stableSessionIdForTarget(targetId)
+        desiredSessionIds.add(sessionId)
+        desiredSessionIdByTargetId.set(targetId, sessionId)
+      }
+
+      for (const [sessionId, target] of Array.from(connectedTargets.entries())) {
+        const desiredSessionId = desiredSessionIdByTargetId.get(target.targetId)
+        if (desiredSessionId === sessionId) continue
+        if (!desiredSessionIds.has(sessionId) || desiredSessionId !== sessionId) {
+          detachConnectedTarget(sessionId, target.targetId)
+        }
+      }
+
       const nextTargets = tabs.map((tab) => {
         const targetId = String(tab.id)
         const sessionId = tab.sessionId ?? stableSessionIdForTarget(targetId)

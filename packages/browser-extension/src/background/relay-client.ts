@@ -22,6 +22,7 @@ import {
   addTabToNine1Group,
   getTabGroupDiagnostics,
   getDefaultNine1Tab,
+  getTabsInActiveNine1Group,
   getTabsInAllActiveNine1Groups,
   getTabsInGroupByTab,
   isTabInActiveNine1Group,
@@ -219,7 +220,7 @@ async function getLiveTab(tabId: number): Promise<chrome.tabs.Tab | null> {
 async function listAuthoritativeManagedTabs(windowId?: number): Promise<chrome.tabs.Tab[]> {
   const tabs = windowId === undefined
     ? await getTabsInAllActiveNine1Groups()
-    : await getTabsInAllActiveNine1Groups().then((allTabs) => allTabs.filter((tab) => tab.windowId === windowId))
+    : await getTabsInActiveNine1Group(windowId)
 
   return tabs.filter((tab) => typeof tab.id === 'number' && isAutomatableTabUrl(tab.url))
 }

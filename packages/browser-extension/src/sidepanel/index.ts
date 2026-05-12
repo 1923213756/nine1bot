@@ -13,7 +13,7 @@ import {
   ACTIVE_NINE1_TAB_GROUPS_STORAGE_KEY,
   ACTIVE_NINE1_TAB_GROUP_STORAGE_KEY,
 } from '../shared/tab-group'
-import { getDefaultNine1Tab } from '../background/tab-group-manager'
+import { getDefaultNine1Tab, refreshBindingsFromStorage } from '../background/tab-group-manager'
 
 let currentFrameOrigin = ''
 let currentServerOrigin = ''
@@ -351,6 +351,7 @@ async function collectActiveTabPageContext(): Promise<unknown | undefined> {
 }
 
 async function getActiveNine1GroupTab(): Promise<chrome.tabs.Tab | undefined> {
+  await refreshBindingsFromStorage()
   return (await getDefaultNine1Tab()) ?? undefined
 }
 
