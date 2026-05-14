@@ -55,6 +55,15 @@ export namespace SessionCompaction {
   export const PRUNE_PROTECT = 40_000
 
   const PRUNE_PROTECTED_TOOLS = ["skill"]
+  const PRUNE_TERMINAL_OUTPUT_MINIMUM = 4_000
+  const PRUNE_TERMINAL_TOOLS = new Set([
+    "terminal_create",
+    "terminal_write",
+    "terminal_view",
+    "terminal_wait",
+    "terminal_list",
+    "terminal_close",
+  ])
 
   // goes backwards through parts until there are 40_000 tokens worth of tool
   // calls. then erases output of previous tool calls. idea is to throw away old
@@ -66,7 +75,9 @@ export namespace SessionCompaction {
     const msgs = await Session.messages({ sessionID: input.sessionID })
     let total = 0
     let pruned = 0
+    let terminalPruned = 0
     const toPrune = []
+    const queued = new Set<string>()
     let turns = 0
 
     loop: for (let msgIndex = msgs.length - 1; msgIndex >= 0; msgIndex--) {
@@ -88,15 +99,22 @@ export namespace SessionCompaction {
               }
             }
             total += estimate
-            if (total > PRUNE_PROTECT) {
+            if (PRUNE_TERMINAL_TOOLS.has(part.tool) && estimate > PRUNE_TERMINAL_OUTPUT_MINIMUM) {
+              terminalPruned += estimate
+              queued.add(part.id)
+              toPrune.push(part)
+              continue
+            }
+            if (total > PRUNE_PROTECT && !queued.has(part.id)) {
               pruned += estimate
+              queued.add(part.id)
               toPrune.push(part)
             }
           }
       }
     }
-    log.info("found", { pruned, total })
-    if (pruned > PRUNE_MINIMUM) {
+    log.info("found", { pruned, terminalPruned, total })
+    if (pruned > PRUNE_MINIMUM || terminalPruned > 0) {
       for (const part of toPrune) {
         if (part.state.status === "completed") {
           part.state.time.compacted = Date.now()

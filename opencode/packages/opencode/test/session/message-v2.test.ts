@@ -597,6 +597,63 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
+  test("replaces compacted terminal output with a checkpoint", () => {
+    const userID = "m-user"
+    const assistantID = "m-assistant"
+
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [
+          {
+            ...basePart(userID, "u1"),
+            type: "text",
+            text: "run terminal",
+          },
+        ] as MessageV2.Part[],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            ...basePart(assistantID, "a1"),
+            type: "tool",
+            callID: "call-1",
+            tool: "terminal_view",
+            state: {
+              status: "completed",
+              input: { id: "agt_123" },
+              output: "this should be summarized",
+              title: "View",
+              metadata: {
+                terminalId: "agt_123",
+                semanticState: "ready",
+                profile: {
+                  profile: "codex",
+                  confidence: "high",
+                  lockedBy: "command+screen-signature",
+                },
+                transcript: {
+                  path: "/tmp/terminal.log",
+                  startOffset: 0,
+                  endOffset: 100,
+                  recentStartOffset: 20,
+                  recentEndOffset: 100,
+                },
+              },
+              time: { start: 0, end: 1, compacted: 1 },
+            },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const result = MessageV2.toModelMessages(input, model)
+    expect(JSON.stringify(result)).toContain("[Old terminal tool result compacted]")
+    expect(JSON.stringify(result)).toContain("profile=codex")
+    expect(JSON.stringify(result)).toContain("transcript=/tmp/terminal.log")
+  })
+
   test("converts assistant tool error into error-text tool result", () => {
     const userID = "m-user"
     const assistantID = "m-assistant"

@@ -48,7 +48,8 @@ Use terminal_create to start a new terminal:
       .map((t) => {
         const status = t.status === "running" ? "running" : "exited"
         return `- ${t.name} (${t.id})
-    Status: ${status} | Size: ${t.cols}x${t.rows} | PID: ${t.pid}
+    Status: ${status} | Semantic: ${t.semanticState} | Profile: ${t.profile.profile} (${t.profile.confidence})
+    Size: ${t.cols}x${t.rows} | PID: ${t.pid}
     Last activity: ${formatTime(t.lastActivity)}`
       })
       .join("\n\n")
@@ -66,6 +67,9 @@ Use terminal_view with the ID to see terminal content.`,
           id: t.id,
           name: t.name,
           status: t.status,
+          semanticState: t.semanticState,
+          profile: t.profile,
+          transcriptPath: t.transcriptPath,
         })),
       },
     }

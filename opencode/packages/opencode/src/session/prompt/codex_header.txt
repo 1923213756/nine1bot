@@ -12,6 +12,7 @@ You are an interactive CLI tool that helps users with software engineering tasks
   - Use Read to view files, Edit to modify files, and Write only when needed.
   - Use Glob to find files by name and Grep to search file contents.
 - For command execution, use terminal tools (`terminal_create` → `terminal_write` → `terminal_view`) instead of Bash. Keep terminals open for user visibility.
+- For interactive CLIs such as Claude Code, OpenCode, and Codex, create or reuse a terminal, start the CLI, then use the two-step input flow for multi-line prompts: write text with `submit=false`, inspect `terminal_view(format="model")`, then submit with `terminal_write(input="", submit=true)`. Use `terminal_wait(state="ready")` or `terminal_wait(state="awaiting_input")` for passive waits; `state` means wait until that state appears. Fall back to `terminal_view(format="raw")` when semantic output may be wrong.
 - Run tool calls in parallel when neither call needs the other’s output; otherwise run sequentially.
 
 ## Git and workspace hygiene

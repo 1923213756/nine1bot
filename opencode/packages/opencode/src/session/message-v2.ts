@@ -433,6 +433,41 @@ export namespace MessageV2 {
   })
   export type WithParts = z.infer<typeof WithParts>
 
+  function compactedToolOutput(part: ToolPart) {
+    if (!part.tool.startsWith("terminal_")) return "[Old tool result content cleared]"
+    const metadata = part.state.status === "completed" ? part.state.metadata : undefined
+    const transcript = metadata?.transcript as
+      | {
+          path?: string
+          startOffset?: number
+          endOffset?: number
+          recentStartOffset?: number
+          recentEndOffset?: number
+        }
+      | undefined
+    const profile = metadata?.profile as
+      | {
+          profile?: string
+          confidence?: string
+          lockedBy?: string
+        }
+      | undefined
+    const pieces = [
+      "[Old terminal tool result compacted]",
+      `tool=${part.tool}`,
+      metadata?.terminalId ? `terminal=${metadata.terminalId}` : undefined,
+      profile?.profile ? `profile=${profile.profile} confidence=${profile.confidence ?? "unknown"} lockedBy=${profile.lockedBy ?? "unknown"}` : undefined,
+      metadata?.semanticState ? `state=${metadata.semanticState}` : undefined,
+      metadata?.matched !== undefined ? `matched=${metadata.matched} timedOut=${metadata.timedOut}` : undefined,
+      transcript?.path
+        ? `transcript=${transcript.path} range=${transcript.startOffset ?? "?"}-${transcript.endOffset ?? "?"} recent=${transcript.recentStartOffset ?? "?"}-${transcript.recentEndOffset ?? "?"}`
+        : metadata?.transcriptPath
+          ? `transcript=${metadata.transcriptPath}`
+          : undefined,
+    ]
+    return pieces.filter(Boolean).join("\n")
+  }
+
   export function toModelMessages(input: WithParts[], model: Provider.Model): ModelMessage[] {
     const result: UIMessage[] = []
     const toolNames = new Set<string>()
@@ -573,7 +608,7 @@ export namespace MessageV2 {
           if (part.type === "tool") {
             toolNames.add(part.tool)
             if (part.state.status === "completed") {
-              const outputText = part.state.time.compacted ? "[Old tool result content cleared]" : part.state.output
+              const outputText = part.state.time.compacted ? compactedToolOutput(part) : part.state.output
               const attachments = part.state.time.compacted ? [] : (part.state.attachments ?? [])
               const output =
                 attachments.length > 0

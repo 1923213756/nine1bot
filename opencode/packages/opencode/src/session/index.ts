@@ -417,6 +417,9 @@ export namespace Session {
       for (const child of await children(sessionID)) {
         await remove(child.id)
       }
+      await import("@/pty/agent-terminal")
+        .then(({ AgentTerminal }) => AgentTerminal.closeSession(sessionID))
+        .catch(() => {})
       await unshare(sessionID).catch(() => {})
       await fs.rm(uploadsDirectory(session), { recursive: true, force: true }).catch(() => {})
       for (const msg of await Storage.list(["message", sessionID])) {
